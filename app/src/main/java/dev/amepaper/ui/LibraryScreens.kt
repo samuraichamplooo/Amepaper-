@@ -274,11 +274,14 @@ fun AlbumScreen(albumId: String, push: (Route) -> Unit, pop: () -> Unit) {
             title = { Text("Wallpaper") },
             text = {
                 Column {
-                    MenuItem("Show on home screen now") {
-                        Changer.show(ctx, Screen.HOME, albumId, img.id); menuFor = null
+                    MenuItem("Set on home screen") {
+                        menuFor = null; applyWallpaper(ctx, albumId, img.id, listOf(Screen.HOME))
                     }
-                    MenuItem("Show on lock screen now") {
-                        Changer.show(ctx, Screen.LOCK, albumId, img.id); menuFor = null
+                    MenuItem("Set on lock screen") {
+                        menuFor = null; applyWallpaper(ctx, albumId, img.id, listOf(Screen.LOCK))
+                    }
+                    MenuItem("Set on home & lock screens") {
+                        menuFor = null; applyWallpaper(ctx, albumId, img.id, listOf(Screen.HOME, Screen.LOCK))
                     }
                     MenuItem("Zoom & crop") {
                         menuFor = null; push(Route.CropRoute(albumId, img.id))

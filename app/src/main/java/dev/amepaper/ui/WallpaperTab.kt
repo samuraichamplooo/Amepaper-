@@ -72,6 +72,7 @@ import dev.amepaper.data.Screen
 import dev.amepaper.data.Screens
 import dev.amepaper.data.Slot
 import dev.amepaper.data.WallImage
+import dev.amepaper.data.get
 import dev.amepaper.wallpaper.RainWallpaperService
 
 fun isWallpaperActive(ctx: Context): Boolean =
@@ -95,6 +96,30 @@ fun openWallpaperPicker(ctx: Context) {
         } catch (_: Exception) {
             Toast.makeText(ctx, "Couldn't open the wallpaper picker", Toast.LENGTH_SHORT).show()
         }
+    }
+}
+
+/**
+ * Shows a picture on the chosen screens right away (with its saved crop). If Amepaper isn't the
+ * live wallpaper yet, opens the system picker so the change becomes visible.
+ */
+fun applyWallpaper(ctx: Context, albumId: String, imageId: String, screens: List<Screen>) {
+    if (screens.isEmpty()) return
+    val sp = Prefs.sp(ctx)
+    if (Screen.LOCK in screens && Screen.HOME !in screens && sp.get(K.MIRROR)) {
+        sp.edit().putBoolean(K.MIRROR.name, false).apply()
+    }
+    screens.forEach { Changer.show(ctx, it, albumId, imageId) }
+    val where = when {
+        screens.size > 1 -> "home & lock screens"
+        screens.first() == Screen.HOME -> "home screen"
+        else -> "lock screen"
+    }
+    if (isWallpaperActive(ctx)) {
+        Toast.makeText(ctx, "Set on your $where", Toast.LENGTH_SHORT).show()
+    } else {
+        Toast.makeText(ctx, "Saved for your $where. Now apply Amepaper as your wallpaper.", Toast.LENGTH_LONG).show()
+        openWallpaperPicker(ctx)
     }
 }
 

@@ -3,6 +3,13 @@ package dev.amepaper.ui
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.widget.Toast
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.clip
+import dev.amepaper.data.Changer
+import dev.amepaper.data.Screen
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -450,10 +457,52 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
         model.init()
     }
 
-    fun save() {
+    var applying by remember { mutableStateOf(false) }
+
+    fun store() {
         model.commit()
         Library.setCrops(albumId, imageId, model.work[Slot.TALL], model.work[Slot.WIDE])
+    }
+
+    fun save() {
+        store()
+        val showing = Screen.entries.filter { Changer.current(sp, it)?.id == imageId }
+        val msg = when {
+            !isWallpaperActive(ctx) -> "Saved. Tap Set wallpaper to use it."
+            showing.size == 2 -> "Saved and updated on your home & lock screens"
+            showing.size == 1 -> "Saved and updated on your ${if (showing[0] == Screen.HOME) "home" else "lock"} screen"
+            else -> "Saved. It's not on screen right now; tap Set wallpaper to show it."
+        }
+        Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
         pop()
+    }
+
+    fun applyTo(screens: List<Screen>) {
+        applying = false
+        store()
+        applyWallpaper(ctx, albumId, imageId, screens)
+        pop()
+    }
+
+    if (applying) {
+        AlertDialog(
+            onDismissRequest = { applying = false },
+            title = { Text("Set as wallpaper") },
+            text = {
+                Column {
+                    Text(
+                        "Saves your edits and shows this picture now. Scheduled changes carry on from here.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                    ApplyOption("Home screen") { applyTo(listOf(Screen.HOME)) }
+                    ApplyOption("Lock screen") { applyTo(listOf(Screen.LOCK)) }
+                    ApplyOption("Home & lock screens") { applyTo(listOf(Screen.HOME, Screen.LOCK)) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { applying = false }) { Text("Cancel") } },
+        )
     }
 
     Scaffold(
@@ -578,14 +627,29 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
                 )
             }
             Row(
-                Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
-                horizontalArrangement = Arrangement.End,
+                Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                OutlinedButton(onClick = { model.reset() }) { Text("No crop") }
-                Spacer(Modifier.width(12.dp))
-                Button(onClick = { save() }) { Text("Save") }
+                TextButton(onClick = { model.reset() }) { Text("Reset") }
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = { save() }) { Text("Save") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { applying = true }, enabled = model.ready) { Text("Set wallpaper") }
             }
         }
+    }
+}
+
+@Composable
+private fun ApplyOption(text: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 14.dp, horizontal = 8.dp),
+    ) {
+        Text(text, style = MaterialTheme.typography.bodyLarge)
     }
 }
 
