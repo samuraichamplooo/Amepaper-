@@ -27,6 +27,7 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
     private class Layer {
         var prepared: Prepared? = null
         var tex = 0
+        var mid = 0
         var fog = 0
         var texGen = -1
         var dirty = false
@@ -76,9 +77,11 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
         val l = layers[target]
         if (l.tex != 0 && l.texGen == gen) {
             pendingDelete.add(l.tex)
+            pendingDelete.add(l.mid)
             pendingDelete.add(l.fog)
         }
         l.tex = 0
+        l.mid = 0
         l.fog = 0
         l.prepared = p
         l.fx = fx
@@ -123,6 +126,7 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
         blank = makeBlank()
         for (l in layers) {
             l.tex = 0
+            l.mid = 0
             l.fog = 0
             l.texGen = gen
             l.dirty = l.prepared != null
@@ -168,10 +172,14 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
         bindTex(1, layers[0].fog)
         bindTex(2, layers[1].tex)
         bindTex(3, layers[1].fog)
+        bindTex(4, layers[0].mid)
+        bindTex(5, layers[1].mid)
         GLES30.glUniform1i(u("uTexA"), 0)
         GLES30.glUniform1i(u("uFogA"), 1)
         GLES30.glUniform1i(u("uTexB"), 2)
         GLES30.glUniform1i(u("uFogB"), 3)
+        GLES30.glUniform1i(u("uMidA"), 4)
+        GLES30.glUniform1i(u("uMidB"), 5)
 
         computeRects(layers[0])
         computeRects(layers[1])
@@ -256,6 +264,7 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
     private fun upload(l: Layer) {
         val p = l.prepared ?: run { l.dirty = false; return }
         l.tex = texFrom(p.sharp)
+        l.mid = texFrom(p.mid)
         l.fog = texFrom(p.fog)
         l.texGen = gen
         l.dirty = false
@@ -319,8 +328,8 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
     companion object {
         private const val TAG = "AmeRenderer"
         private val UNIFORMS = listOf(
-            "uTexA", "uFogA", "uRectA", "uCoverA", "uFxA",
-            "uTexB", "uFogB", "uRectB", "uCoverB", "uFxB",
+            "uTexA", "uMidA", "uFogA", "uRectA", "uCoverA", "uFxA",
+            "uTexB", "uMidB", "uFogB", "uRectB", "uCoverB", "uFxB",
             "uMix", "uRes", "uTime", "uRain", "uDrops", "uSize", "uFog", "uRefr", "uTrail",
         )
     }

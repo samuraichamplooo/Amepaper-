@@ -2,6 +2,22 @@ package dev.amepaper.ui
 
 import android.content.SharedPreferences
 import android.graphics.Bitmap
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import dev.amepaper.render.AiHandoff
+import dev.amepaper.render.FillRenderer
+import kotlinx.coroutines.launch
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -60,7 +76,6 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.input.pointer.positionChanged
@@ -79,7 +94,6 @@ import dev.amepaper.data.Prefs
 import dev.amepaper.data.Screens
 import dev.amepaper.data.Slot
 import dev.amepaper.data.WallImage
-import dev.amepaper.render.Blur
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.abs
@@ -124,7 +138,7 @@ private fun frameRect(area: IntSize, aspect: Float): Rect {
  */
 private class CropModel(private val sp: SharedPreferences, img: WallImage, startSlot: Slot) {
     var bmp by mutableStateOf<ImageBitmap?>(null)
-    var fillBmp by mutableStateOf<ImageBitmap?>(null)
+    var abmp by mutableStateOf<Bitmap?>(null)
     var area by mutableStateOf(IntSize.Zero)
     var slot by mutableStateOf(startSlot)
     val work = mutableStateMapOf(Slot.TALL to img.tall, Slot.WIDE to img.wide)
@@ -133,9 +147,12 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
         Slot.WIDE to (img.wide?.aspect ?: "screen"),
     )
     val fills = mutableStateMapOf(
-        Slot.TALL to (img.tall?.fill ?: "blur"),
-        Slot.WIDE to (img.wide?.fill ?: "blur"),
+        Slot.TALL to (img.tall?.fill ?: "extend"),
+        Slot.WIDE to (img.wide?.fill ?: "extend"),
     )
+    val fillBlurs = mutableStateMapOf(Slot.TALL to (img.tall?.fillBlur ?: 0.5f), Slot.WIDE to (img.wide?.fillBlur ?: 0.5f))
+    val fillDims = mutableStateMapOf(Slot.TALL to (img.tall?.fillDim ?: 0.2f), Slot.WIDE to (img.wide?.fillDim ?: 0.2f))
+    val fillSofts = mutableStateMapOf(Slot.TALL to (img.tall?.fillSoft ?: 0.3f), Slot.WIDE to (img.wide?.fillSoft ?: 0.3f))
     var freeFrame by mutableStateOf<Rect?>(null)
     var scale by mutableFloatStateOf(1f)
     var ox by mutableFloatStateOf(0f)
@@ -145,7 +162,10 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
     val bw: Float get() = (bmp?.width ?: 1).toFloat()
     val bh: Float get() = (bmp?.height ?: 1).toFloat()
     val label: String get() = labels[slot] ?: "screen"
-    val fill: String get() = fills[slot] ?: "blur"
+    val fill: String get() = fills[slot] ?: "extend"
+    val fillBlur: Float get() = fillBlurs[slot] ?: 0.5f
+    val fillDim: Float get() = fillDims[slot] ?: 0.2f
+    val fillSoft: Float get() = fillSofts[slot] ?: 0.3f
 
     private fun aspectOf(l: String): Float {
         val a = when (l) {
@@ -219,7 +239,7 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
             ((fr.top - oy) / ih).coerceIn(-4f, 5f),
             ((fr.right - ox) / iw).coerceIn(-4f, 5f),
             ((fr.bottom - oy) / ih).coerceIn(-4f, 5f),
-            fill,
+            fill, fillBlur, fillDim, fillSoft,
         )
     }
 
@@ -312,6 +332,21 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
         commit()
     }
 
+    fun setFillBlur(v: Float) { fillBlurs[slot] = v; commit() }
+    fun setFillDim(v: Float) { fillDims[slot] = v; commit() }
+    fun setFillSoft(v: Float) { fillSofts[slot] = v; commit() }
+
+    /** The picture's rectangle on the canvas. */
+    fun picRect(): Rect = Rect(ox, oy, ox + bw * scale, oy + bh * scale)
+
+    /** True when the picture doesn't fill the frame (so the fill shows). */
+    fun hasEmptySpace(): Boolean {
+        if (!ready) return false
+        val fr = frame()
+        val p = picRect()
+        return p.left > fr.left + 0.5f || p.top > fr.top + 0.5f || p.right < fr.right - 0.5f || p.bottom < fr.bottom - 0.5f
+    }
+
     fun changeSlot(s: Slot) {
         if (s == slot) return
         slot = s
@@ -322,7 +357,10 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
     fun reset() {
         work[slot] = null
         labels[slot] = "screen"
-        fills[slot] = "blur"
+        fills[slot] = "extend"
+        fillBlurs[slot] = 0.5f
+        fillDims[slot] = 0.2f
+        fillSofts[slot] = 0.3f
         freeFrame = null
         init()
     }
@@ -380,19 +418,31 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
     }
 
     val conf = LocalConfiguration.current
-    val model = remember(img.id) {
+    val model = remember(img.id, img.file) {
         CropModel(sp, img, if (conf.screenHeightDp >= conf.screenWidthDp * 1.5f) Slot.TALL else Slot.WIDE)
     }
 
-    LaunchedEffect(img.id) {
-        val loaded = withContext(Dispatchers.IO) {
-            val b = Importer.decodeForEditor(Library.file(img), 2048) ?: return@withContext null
-            val small = Bitmap.createScaledBitmap(b, max(8, b.width / 8), max(8, b.height / 8), true)
-            Pair(b.asImageBitmap(), Blur.box(small, 3, 3).asImageBitmap())
-        }
+    LaunchedEffect(model) {
+        val loaded = withContext(Dispatchers.IO) { Importer.decodeForEditor(Library.file(img), 2048) }
         if (loaded != null) {
-            model.fillBmp = loaded.second
-            model.bmp = loaded.first
+            model.abmp = loaded
+            model.bmp = loaded.asImageBitmap()
+        }
+    }
+    val scope = rememberCoroutineScope()
+    var tool by remember { mutableIntStateOf(0) }
+    var aiBusy by remember { mutableStateOf(false) }
+    val replacePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val newImg = withContext(Dispatchers.IO) { Importer.import(ctx, uri) }
+                if (newImg != null) {
+                    Library.replaceImage(albumId, imageId, newImg)
+                    Toast.makeText(ctx, "Picture replaced. Adjust it and tap Save.", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(ctx, "Couldn't open that picture", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
     LaunchedEffect(model.slot, model.area, model.bmp) {
@@ -491,69 +541,41 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
                 if (model.bmp == null) CircularProgressIndicator() else EditorCanvas(model)
             }
 
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton(onClick = { model.zoomBy(1f / 1.15f) }) {
-                    Icon(painterResource(R.drawable.ic_zoom_out), contentDescription = "Zoom out")
+            // ---- tool switcher
+            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                val tools = listOf("Zoom", "Shape", "Fill")
+                tools.forEachIndexed { i, name ->
+                    SegmentedButton(
+                        selected = tool == i,
+                        onClick = { tool = i },
+                        shape = SegmentedButtonDefaults.itemShape(i, tools.size),
+                    ) { Text(name) }
                 }
-                Slider(
-                    value = model.zoomPos(),
-                    onValueChange = { model.setZoomPos(it) },
-                    modifier = Modifier.weight(1f),
+            }
+            when (tool) {
+                0 -> ZoomPanel(model)
+                1 -> ShapePanel(model)
+                else -> FillPanel(
+                    model,
+                    aiBusy = aiBusy,
+                    onAi = {
+                        aiBusy = true
+                        scope.launch {
+                            model.commit()
+                            val c = model.work[model.slot] ?: model.crop()
+                            val uri = withContext(Dispatchers.IO) { AiHandoff.export(ctx, img, c) }
+                            aiBusy = false
+                            if (uri != null) {
+                                AiHandoff.openEditor(ctx, uri)
+                            } else {
+                                Toast.makeText(ctx, "Couldn't save the picture for editing", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onReplace = {
+                        replacePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
                 )
-                IconButton(onClick = { model.zoomBy(1.15f) }) {
-                    Icon(painterResource(R.drawable.ic_zoom_in), contentDescription = "Zoom in")
-                }
-                Text(
-                    "${model.zoomPercent()}%",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.width(52.dp),
-                )
-            }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                AssistChip(onClick = { model.fitWhole() }, label = { Text("Fit whole picture") })
-                AssistChip(onClick = { model.fillFrame() }, label = { Text("Fill frame") })
-                AssistChip(onClick = { model.centerImage() }, label = { Text("Center") })
-            }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                RATIOS.forEach { r ->
-                    FilterChip(
-                        selected = model.label == r,
-                        onClick = { model.setLabel(r) },
-                        label = { Text(ratioLabel(r)) },
-                    )
-                }
-            }
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Empty space", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(end = 12.dp))
-                val opts = listOf("blur" to "Blurred", "black" to "Black")
-                SingleChoiceSegmentedButtonRow(Modifier.weight(1f)) {
-                    opts.forEachIndexed { i, (k, name) ->
-                        SegmentedButton(
-                            selected = model.fill == k,
-                            onClick = { model.setFill(k) },
-                            shape = SegmentedButtonDefaults.itemShape(i, opts.size),
-                        ) { Text(name) }
-                    }
-                }
             }
             Row(
                 Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
@@ -568,35 +590,196 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
 }
 
 @Composable
-private fun EditorCanvas(m: CropModel) {
-    val bmp = m.bmp ?: return
-    Canvas(Modifier.fillMaxSize()) {
-        val fr = m.frame()
+private fun ZoomPanel(model: CropModel) {
+    Column {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = { model.zoomBy(1f / 1.15f) }) {
+                Icon(painterResource(R.drawable.ic_zoom_out), contentDescription = "Zoom out")
+            }
+            Slider(
+                value = model.zoomPos(),
+                onValueChange = { model.setZoomPos(it) },
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = { model.zoomBy(1.15f) }) {
+                Icon(painterResource(R.drawable.ic_zoom_in), contentDescription = "Zoom in")
+            }
+            Text(
+                "${model.zoomPercent()}%",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.width(52.dp),
+            )
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            AssistChip(onClick = { model.fitWhole() }, label = { Text("Fit whole picture") })
+            AssistChip(onClick = { model.fillFrame() }, label = { Text("Fill frame") })
+            AssistChip(onClick = { model.centerImage() }, label = { Text("Center") })
+        }
+    }
+}
 
-        // what fills the frame where the picture doesn't reach (zoomed out)
-        clipRect(fr.left, fr.top, fr.right, fr.bottom) {
-            drawRect(Color.Black, fr.topLeft, fr.size)
-            val fb = m.fillBmp
-            if (m.fill == "blur" && fb != null) {
-                val s = max(fr.width / fb.width, fr.height / fb.height)
-                val w = fb.width * s
-                val h = fb.height * s
-                drawImage(
-                    image = fb,
-                    dstOffset = IntOffset((fr.center.x - w / 2f).roundToInt(), (fr.center.y - h / 2f).roundToInt()),
-                    dstSize = IntSize(w.roundToInt(), h.roundToInt()),
-                    alpha = 0.75f,
-                    filterQuality = FilterQuality.Low,
+@Composable
+private fun ShapePanel(model: CropModel) {
+    Column {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            RATIOS.forEach { r ->
+                FilterChip(
+                    selected = model.label == r,
+                    onClick = { model.setLabel(r) },
+                    label = { Text(ratioLabel(r)) },
                 )
             }
         }
-
-        drawImage(
-            image = bmp,
-            dstOffset = IntOffset(m.ox.roundToInt(), m.oy.roundToInt()),
-            dstSize = IntSize((m.bw * m.scale).roundToInt(), (m.bh * m.scale).roundToInt()),
-            filterQuality = FilterQuality.Medium,
+        Text(
+            "Screen matches this display exactly. Free lets you drag the frame's corners and edges.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
         )
+    }
+}
+
+@Composable
+private fun FillPanel(model: CropModel, aiBusy: Boolean, onAi: () -> Unit, onReplace: () -> Unit) {
+    Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
+        if (!model.hasEmptySpace()) {
+            Text(
+                "Zoom out below 100% (or tap Fit whole picture) to make room around the picture. These settings fill that space.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
+            )
+        }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FillRenderer.MODES.forEach { m ->
+                FilterChip(
+                    selected = model.fill == m,
+                    onClick = { model.setFill(m) },
+                    label = { Text(FillRenderer.label(m)) },
+                )
+            }
+        }
+        if (FillRenderer.usesBlur(model.fill)) {
+            MiniSlider("Blur", model.fillBlur) { model.setFillBlur(it) }
+        }
+        if (model.fill != "black") {
+            MiniSlider("Darken", model.fillDim) { model.setFillDim(it) }
+        }
+        MiniSlider("Blend edges", model.fillSoft) { model.setFillSoft(it) }
+
+        if (AiHandoff.supported()) {
+            Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
+                Text("AI generative fill", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Saves this framing (empty space in black) to Pictures/Amepaper and opens it in your photo editor, " +
+                        "e.g. Galaxy AI Generative edit or Google Photos, to fill it with new content. " +
+                        "Then tap Use edited picture and pick the result.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onAi, enabled = !aiBusy && model.ready) {
+                        Text(if (aiBusy) "Saving…" else "Open in AI editor")
+                    }
+                    OutlinedButton(onClick = onReplace) { Text("Use edited picture") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MiniSlider(title: String, value: Float, onChange: (Float) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(96.dp))
+        Slider(value = value, onValueChange = onChange, modifier = Modifier.weight(1f))
+        Text(
+            "${(value * 100).roundToInt()}%",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.width(44.dp).padding(start = 6.dp),
+        )
+    }
+}
+
+@Composable
+private fun EditorCanvas(m: CropModel) {
+    if (m.bmp == null) return
+    val abmp = m.abmp ?: return
+
+    // 1) the fill, drawn across the whole editor and blurred on the GPU (Android 12+)
+    Canvas(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                val fr = m.frame()
+                val r = if (FillRenderer.usesBlur(m.fill)) {
+                    FillRenderer.blurRadius(m.fillBlur, min(fr.width, fr.height)) * 1.73f
+                } else {
+                    0f
+                }
+                renderEffect = if (r > 0.5f) BlurEffect(r, r, TileMode.Clamp) else null
+            },
+    ) {
+        drawRect(Color.Black)
+        if (m.fill == "black") return@Canvas
+        val fr = m.frame()
+        val p = m.picRect()
+        // the part of the picture inside the frame (what the wallpaper will contain)
+        val sx0 = ((max(fr.left, p.left) - p.left) / m.scale).coerceIn(0f, m.bw - 1f)
+        val sy0 = ((max(fr.top, p.top) - p.top) / m.scale).coerceIn(0f, m.bh - 1f)
+        val sx1 = ((min(fr.right, p.right) - p.left) / m.scale).coerceIn(sx0 + 1f, m.bw)
+        val sy1 = ((min(fr.bottom, p.bottom) - p.top) / m.scale).coerceIn(sy0 + 1f, m.bh)
+        val src = android.graphics.Rect(sx0.roundToInt(), sy0.roundToInt(), sx1.roundToInt(), sy1.roundToInt())
+        val visible = android.graphics.RectF(
+            p.left + src.left * m.scale, p.top + src.top * m.scale,
+            p.left + src.right * m.scale, p.top + src.bottom * m.scale,
+        )
+        val r = FillRenderer.blurRadius(m.fillBlur, min(fr.width, fr.height)) * 3f + 4f
+        val area = android.graphics.RectF(fr.left - r, fr.top - r, fr.right + r, fr.bottom + r)
+        drawIntoCanvas { c -> FillRenderer.drawFillBase(c.nativeCanvas, area, abmp, src, visible, m.fill) }
+    }
+
+    // 2) darkening, the picture (with blended edges), the frame and handles
+    Canvas(Modifier.fillMaxSize()) {
+        val fr = m.frame()
+        if (m.fill != "black" && m.fillDim > 0.01f) {
+            drawRect(Color.Black.copy(alpha = m.fillDim), fr.topLeft, fr.size)
+        }
+        val p = m.picRect()
+        drawIntoCanvas { c ->
+            FillRenderer.drawPicture(
+                c.nativeCanvas, abmp, null,
+                android.graphics.RectF(p.left, p.top, p.right, p.bottom),
+                android.graphics.RectF(fr.left, fr.top, fr.right, fr.bottom),
+                m.fillSoft,
+            )
+        }
 
         val dim = Color.Black.copy(alpha = 0.62f)
         drawRect(dim, Offset.Zero, Size(size.width, fr.top))
@@ -620,9 +803,9 @@ private fun EditorCanvas(m: CropModel) {
                 Offset(fr.left, fr.center.y), Offset(fr.right, fr.center.y),
                 Offset(fr.center.x, fr.top), Offset(fr.center.x, fr.bottom),
             )
-            points.forEach { p ->
-                drawCircle(Color.White, r, p)
-                drawCircle(Color(0xFF7E2148), r * 0.55f, p)
+            points.forEach { pt ->
+                drawCircle(Color.White, r, pt)
+                drawCircle(Color(0xFF7E2148), r * 0.55f, pt)
             }
         }
     }

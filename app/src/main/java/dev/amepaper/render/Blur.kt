@@ -32,6 +32,14 @@ object Blur {
         return Bitmap.createScaledBitmap(blurred, src.width, src.height, true)
     }
 
+    /** Light blur for the wet-glass look (between sharp and [fog]). */
+    fun mid(src: Bitmap): Bitmap {
+        val sw = max(16, src.width / 3)
+        val sh = max(16, src.height / 3)
+        val small = Bitmap.createScaledBitmap(src, sw, sh, true)
+        return box(small, 2, 3)
+    }
+
     /** The fogged-glass copy used by the shader (also fills letterbox bars in Fit mode). */
     fun fog(src: Bitmap): Bitmap {
         val sw = max(16, src.width / 8)

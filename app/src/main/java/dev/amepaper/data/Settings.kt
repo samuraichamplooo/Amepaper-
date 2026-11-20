@@ -91,7 +91,7 @@ object K {
     val RAIN_HOME = BoolKey("rain_home", true)
     val RAIN_LOCK = BoolKey("rain_lock", true)
     val RAIN_AMOUNT = FloatKey("rain_amount", 0.6f)
-    val DROPLETS = FloatKey("droplets", 0.5f)
+    val DROPLETS = FloatKey("droplets", 0.7f)
     val DROP_SIZE = FloatKey("drop_size", 1f)
     val FOG = FloatKey("fog", 0.3f)
     val REFRACTION = FloatKey("refraction", 0.6f)

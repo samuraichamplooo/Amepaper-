@@ -12,7 +12,10 @@ import java.util.UUID
 /**
  * A crop chosen in the editor, stored as fractions of the image. Values can go below 0 or
  * above 1 when the picture was zoomed out smaller than the frame; the empty space is then
- * filled with [fill] ("blur" = blurred copy of the picture, "black").
+ * filled with [fill]: "blur" (blurred copy), "extend" (edges stretched outward), "mirror"
+ * (picture reflected), "color" (gradient from the edge colours) or "black".
+ * [fillBlur], [fillDim] and [fillSoft] (0..1) set the fill's blur, darkening and how softly
+ * the picture's edges blend into it.
  */
 data class Crop(
     val aspect: String,
@@ -21,6 +24,9 @@ data class Crop(
     val r: Float,
     val b: Float,
     val fill: String = "blur",
+    val fillBlur: Float = 0.5f,
+    val fillDim: Float = 0.25f,
+    val fillSoft: Float = 0.3f,
 ) {
     /** True when the crop stays inside the picture (no empty space to fill). */
     val inside: Boolean
@@ -29,6 +35,7 @@ data class Crop(
     fun toJson(): JSONObject = JSONObject()
         .put("a", aspect).put("l", l.toDouble()).put("t", t.toDouble())
         .put("r", r.toDouble()).put("b", b.toDouble()).put("f", fill)
+        .put("fb", fillBlur.toDouble()).put("fd", fillDim.toDouble()).put("fs", fillSoft.toDouble())
 
     companion object {
         fun from(o: JSONObject?): Crop? {
@@ -38,6 +45,9 @@ data class Crop(
                 o.optDouble("l", 0.0).toFloat(), o.optDouble("t", 0.0).toFloat(),
                 o.optDouble("r", 1.0).toFloat(), o.optDouble("b", 1.0).toFloat(),
                 o.optString("f", "blur"),
+                o.optDouble("fb", 0.5).toFloat(),
+                o.optDouble("fd", 0.25).toFloat(),
+                o.optDouble("fs", 0.3).toFloat(),
             )
             return if (c.r - c.l > 0.001f && c.b - c.t > 0.001f) c else null
         }
@@ -129,6 +139,20 @@ object Library {
             list.map { a -> if (a.id == albumId) a.copy(images = a.images.filter { it.id != imageId }) else a }
         }
         if (img != null) runCatching { file(img).delete() }
+    }
+
+    /** Swap in a new picture file (e.g. one extended in an AI editor), keeping the same id. */
+    fun replaceImage(albumId: String, imageId: String, newImg: WallImage) {
+        val old = album(albumId)?.images?.firstOrNull { it.id == imageId } ?: return
+        update { list ->
+            list.map { a ->
+                if (a.id != albumId) a
+                else a.copy(images = a.images.map {
+                    if (it.id == imageId) it.copy(file = newImg.file, w = newImg.w, h = newImg.h, tall = null, wide = null) else it
+                })
+            }
+        }
+        if (old.file != newImg.file) runCatching { file(old).delete() }
     }
 
     fun setCrops(albumId: String, imageId: String, tall: Crop?, wide: Crop?) {

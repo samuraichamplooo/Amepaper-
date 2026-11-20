@@ -60,11 +60,12 @@ import kotlin.math.roundToInt
 private class Preset(val name: String, val rain: Float, val drops: Float, val size: Float, val fog: Float, val trails: Float, val speed: Float)
 
 private val PRESETS = listOf(
-    Preset("Drizzle", 0.3f, 0.65f, 0.85f, 0.15f, 0.6f, 0.8f),
-    Preset("Rain", 0.6f, 0.5f, 1f, 0.3f, 0.8f, 1f),
-    Preset("Downpour", 1f, 0.8f, 1.15f, 0.45f, 1f, 1.35f),
-    Preset("Foggy window", 0.35f, 0.3f, 1.1f, 0.85f, 1f, 0.8f),
-    Preset("Just droplets", 0f, 0.75f, 1f, 0.1f, 0.5f, 1f),
+    Preset("Rain Paper", 0.6f, 0.7f, 1f, 0.3f, 0.9f, 1f),
+    Preset("Drizzle", 0.3f, 0.8f, 0.85f, 0.2f, 0.7f, 0.8f),
+    Preset("Downpour", 1f, 0.9f, 1.1f, 0.4f, 1f, 1.35f),
+    Preset("Misty window", 0.35f, 0.5f, 1.1f, 0.8f, 1f, 0.8f),
+    Preset("Just droplets", 0f, 0.85f, 1f, 0.25f, 0.5f, 1f),
+    Preset("Clear glass", 0.4f, 0.6f, 1f, 0f, 0.8f, 1f),
 )
 
 @Composable
@@ -125,9 +126,9 @@ fun RainTab() {
         GroupCard {
             Spacer(Modifier.height(8.dp))
             SliderPref("Rain (sliding drops)", pref(K.RAIN_AMOUNT))
-            SliderPref("Droplets (condensation)", pref(K.DROPLETS))
+            SliderPref("Droplets on the glass", pref(K.DROPLETS))
             SliderPref("Drop size", pref(K.DROP_SIZE), 0.5f..2f, format = { "×" + "%.1f".format(it) })
-            SliderPref("Fogged glass", pref(K.FOG))
+            SliderPref("Glass blur", pref(K.FOG))
             SliderPref("Refraction", pref(K.REFRACTION))
             SliderPref("Trails", pref(K.TRAILS))
             SliderPref("Speed", pref(K.SPEED), 0.3f..2.5f, format = { "×" + "%.1f".format(it) })

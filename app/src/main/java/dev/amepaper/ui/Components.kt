@@ -1,9 +1,6 @@
 package dev.amepaper.ui
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Paint
-import android.graphics.RectF
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +42,7 @@ import dev.amepaper.data.Crop
 import dev.amepaper.data.Library
 import dev.amepaper.data.Slot
 import dev.amepaper.data.WallImage
+import dev.amepaper.render.FillRenderer
 import kotlin.math.roundToInt
 
 @Composable
@@ -164,7 +162,7 @@ fun NavRow(title: String, subtitle: String?, leading: (@Composable () -> Unit)? 
 
 /** Coil transformation that cuts a saved crop out of the image (with fill when zoomed out). */
 class CropTransformation(private val crop: Crop) : Transformation {
-    override val cacheKey: String = "crop-${crop.l}-${crop.t}-${crop.r}-${crop.b}-${crop.fill}"
+    override val cacheKey: String = "crop-$crop"
 
     override suspend fun transform(input: Bitmap, size: Size): Bitmap {
         val iw = input.width
@@ -176,27 +174,14 @@ class CropTransformation(private val crop: Crop) : Transformation {
             val h = ((crop.b - crop.t) * ih).roundToInt().coerceIn(1, ih - y)
             return Bitmap.createBitmap(input, x, y, w, h)
         }
-        val cw = ((crop.r - crop.l) * iw).roundToInt().coerceIn(1, 3000)
-        val ch = ((crop.b - crop.t) * ih).roundToInt().coerceIn(1, 3000)
-        val kx = cw / ((crop.r - crop.l) * iw)
-        val ky = ch / ((crop.b - crop.t) * ih)
-        val out = Bitmap.createBitmap(cw, ch, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(out)
-        canvas.drawColor(android.graphics.Color.BLACK)
-        val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-        if (crop.fill == "blur") {
-            val tiny = Bitmap.createScaledBitmap(input, maxOf(4, iw / 28), maxOf(4, ih / 28), true)
-            val s = maxOf(cw.toFloat() / tiny.width, ch.toFloat() / tiny.height)
-            val dw = tiny.width * s
-            val dh = tiny.height * s
-            paint.alpha = 190
-            canvas.drawBitmap(tiny, null, RectF((cw - dw) / 2f, (ch - dh) / 2f, (cw + dw) / 2f, (ch + dh) / 2f), paint)
-            paint.alpha = 255
-        }
-        val left = -crop.l * iw * kx
-        val top = -crop.t * ih * ky
-        canvas.drawBitmap(input, null, RectF(left, top, left + iw * kx, top + ih * ky), paint)
-        return out
+        val cw = (crop.r - crop.l) * iw
+        val ch = (crop.b - crop.t) * ih
+        val k = minOf(1f, 1600f / maxOf(cw, ch))
+        return FillRenderer.compose(
+            input, crop.l * iw, crop.t * ih, cw, ch,
+            maxOf(1, (cw * k).roundToInt()), maxOf(1, (ch * k).roundToInt()),
+            crop.fill, crop.fillBlur, crop.fillDim, crop.fillSoft,
+        )
     }
 }
 

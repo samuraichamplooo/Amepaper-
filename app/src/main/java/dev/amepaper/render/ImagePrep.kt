@@ -9,6 +9,7 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import dev.amepaper.data.Crop
 import dev.amepaper.data.Library
 import dev.amepaper.data.ScaleMode
 import dev.amepaper.data.Screen
@@ -23,6 +24,7 @@ class Prepared(
     val key: String,
     val screen: Screen,
     val sharp: Bitmap,
+    val mid: Bitmap,
     val fog: Bitmap,
     /** Size of the cropped region in image pixels (used for "None" scaling and aspect). */
     val srcW: Float,
@@ -35,7 +37,7 @@ object ImagePrep {
 
     fun keyFor(img: WallImage, screen: Screen, w: Int, h: Int, mode: ScaleMode, blur: Float): String {
         val slot = Screens.slotFor(w, h)
-        return "${img.id}|$slot|${img.crop(slot)}|${w}x$h|$mode|$blur|$screen"
+        return "${img.id}|${img.file}|$slot|${img.crop(slot)}|${w}x$h|$mode|$blur|$screen"
     }
 
     fun placeholderKey(screen: Screen, w: Int, h: Int): String = "placeholder|${w}x$h|$screen"
@@ -86,11 +88,12 @@ object ImagePrep {
                 region
             }
         } else {
-            composite(file.absolutePath, iw, ih, cl, ct, cw, ch, outW, outH, c.fill) ?: return null
+            composite(file.absolutePath, iw, ih, cl, ct, cw, ch, outW, outH, c) ?: return null
         }
         if (blur > 0.01f) sharp = Blur.soften(sharp, blur)
-        val fog = Blur.fog(sharp)
-        return Prepared(key, screen, sharp, fog, cw, ch, mode)
+        val mid = Blur.mid(sharp)
+        val fog = Blur.fog(mid)
+        return Prepared(key, screen, sharp, mid, fog, cw, ch, mode)
     }
 
     private fun sampleOpts(rw: Int, rh: Int, needW: Int, needH: Int): BitmapFactory.Options {
@@ -106,41 +109,25 @@ object ImagePrep {
     private fun composite(
         path: String, iw: Int, ih: Int,
         cl: Float, ct: Float, cw: Float, ch: Float,
-        outW: Int, outH: Int, fill: String,
+        outW: Int, outH: Int, crop: Crop,
     ): Bitmap? {
+        val x0 = max(0f, cl).roundToInt().coerceIn(0, iw - 1)
+        val y0 = max(0f, ct).roundToInt().coerceIn(0, ih - 1)
+        val x1 = min(iw.toFloat(), cl + cw).roundToInt().coerceIn(x0 + 1, iw)
+        val y1 = min(ih.toFloat(), ct + ch).roundToInt().coerceIn(y0 + 1, ih)
         val kx = outW / cw
         val ky = outH / ch
-        val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(out)
-        canvas.drawColor(0xFF000000.toInt())
-        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
-        if (fill == "blur") {
-            val small = BitmapFactory.decodeFile(path, sampleOpts(iw, ih, 160, 160))
-            if (small != null) {
-                val blurred = Blur.box(Bitmap.createScaledBitmap(small, max(8, small.width / 2), max(8, small.height / 2), true), 4, 3)
-                val s = max(outW.toFloat() / blurred.width, outH.toFloat() / blurred.height)
-                val dw = blurred.width * s
-                val dh = blurred.height * s
-                val fx = (outW - dw) / 2f
-                val fy = (outH - dh) / 2f
-                paint.alpha = 190
-                canvas.drawBitmap(blurred, null, RectF(fx, fy, fx + dw, fy + dh), paint)
-                paint.alpha = 255
-            }
-        }
-        val x0 = max(0f, cl)
-        val y0 = max(0f, ct)
-        val x1 = min(iw.toFloat(), cl + cw)
-        val y1 = min(ih.toFloat(), ct + ch)
-        if (x1 - x0 >= 1f && y1 - y0 >= 1f) {
-            val rect = Rect(x0.roundToInt(), y0.roundToInt(), x1.roundToInt().coerceAtLeast(x0.roundToInt() + 1), y1.roundToInt().coerceAtLeast(y0.roundToInt() + 1))
-            val dst = RectF((x0 - cl) * kx, (y0 - ct) * ky, (x1 - cl) * kx, (y1 - ct) * ky)
-            val needW = max(1, dst.width().roundToInt())
-            val needH = max(1, dst.height().roundToInt())
-            val region = decodeRegion(path, rect, sampleOpts(rect.width(), rect.height(), needW, needH))
-            if (region != null) canvas.drawBitmap(region, null, dst, paint)
-        }
-        return out
+        val needW = max(1, ((x1 - x0) * kx).roundToInt())
+        val needH = max(1, ((y1 - y0) * ky).roundToInt())
+        val region = decodeRegion(path, Rect(x0, y0, x1, y1), sampleOpts(x1 - x0, y1 - y0, needW, needH)) ?: return null
+        // crop rectangle in the decoded region's own pixels
+        val sx = region.width.toFloat() / (x1 - x0)
+        val sy = region.height.toFloat() / (y1 - y0)
+        return FillRenderer.compose(
+            region,
+            (cl - x0) * sx, (ct - y0) * sy, cw * sx, ch * sy,
+            outW, outH, crop.fill, crop.fillBlur, crop.fillDim, crop.fillSoft,
+        )
     }
 
     private fun decodeRegion(path: String, rect: Rect, opts: BitmapFactory.Options): Bitmap? {
@@ -182,6 +169,6 @@ object ImagePrep {
             Shader.TileMode.CLAMP,
         )
         canvas.drawRect(0f, 0f, pw.toFloat(), ph.toFloat(), p)
-        return Prepared(key, screen, bmp, Blur.fog(bmp), w.toFloat(), h.toFloat(), ScaleMode.STRETCH)
+        return Prepared(key, screen, bmp, Blur.mid(bmp), Blur.fog(bmp), w.toFloat(), h.toFloat(), ScaleMode.STRETCH)
     }
 }
