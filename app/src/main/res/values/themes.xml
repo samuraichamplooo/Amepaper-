@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Amepaper" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_light</item>
+    </style>
+    <color name="window_light">#FFFFF8F8</color>
+    <color name="window_dark">#FF191113</color>
+    <color name="ic_launcher_background">#FF4A1530</color>
+</resources>
