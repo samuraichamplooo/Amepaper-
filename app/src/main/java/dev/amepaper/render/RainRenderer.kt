@@ -195,6 +195,8 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
         GLES30.glUniform1f(u("uFog"), p.fog)
         GLES30.glUniform1f(u("uRefr"), p.refraction)
         GLES30.glUniform1f(u("uTrail"), p.trails)
+        GLES30.glUniform1f(u("uImpact"), p.impacts)
+        GLES30.glUniform1f(u("uFall"), p.falling)
 
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, vbo)
         GLES30.glEnableVertexAttribArray(0)
@@ -330,7 +332,7 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
         private val UNIFORMS = listOf(
             "uTexA", "uMidA", "uFogA", "uRectA", "uCoverA", "uFxA",
             "uTexB", "uMidB", "uFogB", "uRectB", "uCoverB", "uFxB",
-            "uMix", "uRes", "uTime", "uRain", "uDrops", "uSize", "uFog", "uRefr", "uTrail",
+            "uMix", "uRes", "uTime", "uRain", "uDrops", "uSize", "uFog", "uRefr", "uTrail", "uImpact", "uFall",
         )
     }
 }

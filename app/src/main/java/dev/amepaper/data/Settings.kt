@@ -97,6 +97,8 @@ object K {
     val REFRACTION = FloatKey("refraction", 0.6f)
     val TRAILS = FloatKey("trails", 0.8f)
     val SPEED = FloatKey("speed", 1f)
+    val IMPACTS = FloatKey("impacts", 0.45f)
+    val FALLING = FloatKey("falling", 0.25f)
     val FPS = IntKey("fps", 30)
     val SAVER = BoolKey("battery_saver", true)
 
@@ -122,7 +124,7 @@ object K {
     /** Settings that only change the rain parameters. */
     val RAIN_KEYS = setOf(
         RAIN_ON.name, RAIN_AMOUNT.name, DROPLETS.name, DROP_SIZE.name, FOG.name, REFRACTION.name,
-        TRAILS.name, SPEED.name, WX_SYNC.name, WX_LEVEL.name, WX_DRY.name, FPS.name, SAVER.name,
+        TRAILS.name, SPEED.name, IMPACTS.name, FALLING.name, WX_SYNC.name, WX_LEVEL.name, WX_DRY.name, FPS.name, SAVER.name,
     )
 
     /** Settings that are applied in the shader without decoding the image again. */
@@ -171,11 +173,13 @@ data class RainParams(
     val refraction: Float,
     val trails: Float,
     val speed: Float,
+    val impacts: Float,
+    val falling: Float,
 ) {
-    val animated: Boolean get() = rain > 0.001f || drops > 0.001f
+    val animated: Boolean get() = rain > 0.001f || drops > 0.001f || impacts > 0.001f || falling > 0.001f
 
     companion object {
-        val OFF = RainParams(0f, 0f, 1f, 0f, 0.6f, 0.8f, 1f)
+        val OFF = RainParams(0f, 0f, 1f, 0f, 0.6f, 0.8f, 1f, 0f, 0f)
 
         fun read(sp: SharedPreferences): RainParams {
             if (!sp.get(K.RAIN_ON)) return OFF
@@ -187,20 +191,24 @@ data class RainParams(
                 refraction = sp.get(K.REFRACTION),
                 trails = sp.get(K.TRAILS),
                 speed = sp.get(K.SPEED),
+                impacts = sp.get(K.IMPACTS),
+                falling = sp.get(K.FALLING),
             )
             if (!sp.get(K.WX_SYNC)) return base
             return when (sp.get(K.WX_LEVEL)) {
                 0 -> when (sp.get(K.WX_DRY)) {
                     "keep" -> base
-                    "droplets" -> base.copy(rain = 0f, drops = maxOf(0.25f, base.drops * 0.6f), fog = base.fog * 0.4f)
-                    else -> base.copy(rain = 0f, drops = 0f, fog = 0f)
+                    "droplets" -> base.copy(rain = 0f, impacts = 0f, falling = 0f, drops = maxOf(0.25f, base.drops * 0.6f), fog = base.fog * 0.4f)
+                    else -> base.copy(rain = 0f, drops = 0f, fog = 0f, impacts = 0f, falling = 0f)
                 }
-                1 -> base.copy(rain = base.rain * 0.45f, drops = maxOf(base.drops, 0.45f))
+                1 -> base.copy(rain = base.rain * 0.45f, drops = maxOf(base.drops, 0.45f), impacts = base.impacts * 0.5f, falling = base.falling * 0.5f)
                 3 -> base.copy(
                     rain = minOf(1f, base.rain * 1.4f + 0.15f),
                     drops = minOf(1f, base.drops + 0.2f),
                     fog = maxOf(base.fog, 0.4f),
                     speed = base.speed * 1.25f,
+                    impacts = minOf(1f, base.impacts * 1.4f + 0.15f),
+                    falling = minOf(1f, base.falling * 1.5f + 0.15f),
                 )
                 else -> base // 2 = rain, -1 = not known yet
             }

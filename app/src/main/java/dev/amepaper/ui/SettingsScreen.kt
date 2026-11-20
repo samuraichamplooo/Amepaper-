@@ -76,7 +76,7 @@ fun SettingsScreen(pop: () -> Unit) {
                 RowDivider()
                 NavRow("Reset rain settings", "Back to the default rain look") {
                     val e = Prefs.sp(ctx).edit()
-                    listOf(K.RAIN_AMOUNT, K.DROPLETS, K.DROP_SIZE, K.FOG, K.REFRACTION, K.TRAILS, K.SPEED)
+                    listOf(K.RAIN_AMOUNT, K.DROPLETS, K.DROP_SIZE, K.FOG, K.REFRACTION, K.TRAILS, K.SPEED, K.IMPACTS, K.FALLING)
                         .forEach { e.putFloat(it.name, it.def) }
                     e.putInt(K.FPS.name, K.FPS.def)
                     e.apply()

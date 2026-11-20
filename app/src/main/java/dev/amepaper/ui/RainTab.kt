@@ -57,15 +57,19 @@ import kotlinx.coroutines.launch
 import java.util.Date
 import kotlin.math.roundToInt
 
-private class Preset(val name: String, val rain: Float, val drops: Float, val size: Float, val fog: Float, val trails: Float, val speed: Float)
+private class Preset(
+    val name: String, val rain: Float, val drops: Float, val size: Float, val fog: Float,
+    val trails: Float, val speed: Float, val impacts: Float, val falling: Float,
+)
 
 private val PRESETS = listOf(
-    Preset("Rain Paper", 0.6f, 0.7f, 1f, 0.3f, 0.9f, 1f),
-    Preset("Drizzle", 0.3f, 0.8f, 0.85f, 0.2f, 0.7f, 0.8f),
-    Preset("Downpour", 1f, 0.9f, 1.1f, 0.4f, 1f, 1.35f),
-    Preset("Misty window", 0.35f, 0.5f, 1.1f, 0.8f, 1f, 0.8f),
-    Preset("Just droplets", 0f, 0.85f, 1f, 0.25f, 0.5f, 1f),
-    Preset("Clear glass", 0.4f, 0.6f, 1f, 0f, 0.8f, 1f),
+    Preset("Rain Paper", 0.6f, 0.7f, 1f, 0.3f, 0.9f, 1f, 0.45f, 0.25f),
+    Preset("Drizzle", 0.3f, 0.8f, 0.85f, 0.2f, 0.7f, 0.8f, 0.25f, 0.15f),
+    Preset("Downpour", 1f, 0.9f, 1.1f, 0.4f, 1f, 1.35f, 0.85f, 0.6f),
+    Preset("Storm", 0.9f, 0.8f, 1.2f, 0.45f, 1f, 1.6f, 1f, 0.9f),
+    Preset("Misty window", 0.35f, 0.5f, 1.1f, 0.8f, 1f, 0.8f, 0.2f, 0.1f),
+    Preset("Just droplets", 0f, 0.85f, 1f, 0.25f, 0.5f, 1f, 0f, 0f),
+    Preset("Clear glass", 0.4f, 0.6f, 1f, 0f, 0.8f, 1f, 0.45f, 0.2f),
 )
 
 @Composable
@@ -125,12 +129,14 @@ fun RainTab() {
         SectionLabel("Customization")
         GroupCard {
             Spacer(Modifier.height(8.dp))
-            SliderPref("Rain (sliding drops)", pref(K.RAIN_AMOUNT))
+            SliderPref("Raindrops hitting the glass", pref(K.IMPACTS))
+            SliderPref("Sliding drops", pref(K.RAIN_AMOUNT))
             SliderPref("Droplets on the glass", pref(K.DROPLETS))
             SliderPref("Drop size", pref(K.DROP_SIZE), 0.5f..2f, format = { "×" + "%.1f".format(it) })
             SliderPref("Glass blur", pref(K.FOG))
             SliderPref("Refraction", pref(K.REFRACTION))
             SliderPref("Trails", pref(K.TRAILS))
+            SliderPref("Falling rain (outside)", pref(K.FALLING))
             SliderPref("Speed", pref(K.SPEED), 0.3f..2.5f, format = { "×" + "%.1f".format(it) })
             Spacer(Modifier.height(8.dp))
         }
@@ -174,6 +180,8 @@ private fun applyPreset(ctx: Context, p: Preset) {
         .putFloat(K.FOG.name, p.fog)
         .putFloat(K.TRAILS.name, p.trails)
         .putFloat(K.SPEED.name, p.speed)
+        .putFloat(K.IMPACTS.name, p.impacts)
+        .putFloat(K.FALLING.name, p.falling)
         .apply()
 }
 
