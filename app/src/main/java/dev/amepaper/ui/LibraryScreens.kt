@@ -208,7 +208,7 @@ fun AlbumScreen(albumId: String, push: (Route) -> Unit, pop: () -> Unit) {
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
                     }
                     Text(
-                        if (album.images.isEmpty()) "No wallpapers yet." else "Tap a wallpaper to crop it. Long-press for more.",
+                        if (album.images.isEmpty()) "No wallpapers yet." else "Tap a wallpaper to zoom & crop it. Long-press for more.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 10.dp, start = 4.dp),
@@ -280,7 +280,7 @@ fun AlbumScreen(albumId: String, push: (Route) -> Unit, pop: () -> Unit) {
                     MenuItem("Show on lock screen now") {
                         Changer.show(ctx, Screen.LOCK, albumId, img.id); menuFor = null
                     }
-                    MenuItem("Crop & aspect ratio") {
+                    MenuItem("Zoom & crop") {
                         menuFor = null; push(Route.CropRoute(albumId, img.id))
                     }
                     MenuItem("Remove from album") {

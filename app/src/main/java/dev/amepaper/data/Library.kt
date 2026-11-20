@@ -9,11 +9,26 @@ import org.json.JSONObject
 import java.io.File
 import java.util.UUID
 
-/** A crop chosen in the editor, stored as fractions (0..1) of the image. */
-data class Crop(val aspect: String, val l: Float, val t: Float, val r: Float, val b: Float) {
+/**
+ * A crop chosen in the editor, stored as fractions of the image. Values can go below 0 or
+ * above 1 when the picture was zoomed out smaller than the frame; the empty space is then
+ * filled with [fill] ("blur" = blurred copy of the picture, "black").
+ */
+data class Crop(
+    val aspect: String,
+    val l: Float,
+    val t: Float,
+    val r: Float,
+    val b: Float,
+    val fill: String = "blur",
+) {
+    /** True when the crop stays inside the picture (no empty space to fill). */
+    val inside: Boolean
+        get() = l >= -0.0005f && t >= -0.0005f && r <= 1.0005f && b <= 1.0005f
+
     fun toJson(): JSONObject = JSONObject()
         .put("a", aspect).put("l", l.toDouble()).put("t", t.toDouble())
-        .put("r", r.toDouble()).put("b", b.toDouble())
+        .put("r", r.toDouble()).put("b", b.toDouble()).put("f", fill)
 
     companion object {
         fun from(o: JSONObject?): Crop? {
@@ -22,6 +37,7 @@ data class Crop(val aspect: String, val l: Float, val t: Float, val r: Float, va
                 o.optString("a", "custom"),
                 o.optDouble("l", 0.0).toFloat(), o.optDouble("t", 0.0).toFloat(),
                 o.optDouble("r", 1.0).toFloat(), o.optDouble("b", 1.0).toFloat(),
+                o.optString("f", "blur"),
             )
             return if (c.r - c.l > 0.001f && c.b - c.t > 0.001f) c else null
         }

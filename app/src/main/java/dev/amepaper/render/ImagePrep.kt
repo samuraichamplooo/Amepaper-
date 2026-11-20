@@ -7,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
 import android.graphics.Shader
 import dev.amepaper.data.Library
 import dev.amepaper.data.ScaleMode
@@ -49,43 +50,97 @@ object ImagePrep {
         if (iw <= 0 || ih <= 0) return null
 
         val c = img.crop(Screens.slotFor(w, h))
-        val l = ((c?.l ?: 0f) * iw).roundToInt().coerceIn(0, iw - 1)
-        val t = ((c?.t ?: 0f) * ih).roundToInt().coerceIn(0, ih - 1)
-        val r = ((c?.r ?: 1f) * iw).roundToInt().coerceIn(l + 1, iw)
-        val b = ((c?.b ?: 1f) * ih).roundToInt().coerceIn(t + 1, ih)
-        val rw = r - l
-        val rh = b - t
+        // Crop rectangle in image pixels; may reach outside the picture when zoomed out.
+        val cl = (c?.l ?: 0f) * iw
+        val ct = (c?.t ?: 0f) * ih
+        val cr = (c?.r ?: 1f) * iw
+        val cb = (c?.b ?: 1f) * ih
+        val cw = max(1f, cr - cl)
+        val ch = max(1f, cb - ct)
 
         val sw = w.toFloat()
         val sh = h.toFloat()
         val target: Pair<Float, Float> = when (mode) {
-            ScaleMode.FILL -> { val s = max(sw / rw, sh / rh); Pair(rw * s, rh * s) }
-            ScaleMode.FIT -> { val s = min(sw / rw, sh / rh); Pair(rw * s, rh * s) }
+            ScaleMode.FILL -> { val s = max(sw / cw, sh / ch); Pair(cw * s, ch * s) }
+            ScaleMode.FIT -> { val s = min(sw / cw, sh / ch); Pair(cw * s, ch * s) }
             ScaleMode.STRETCH -> Pair(sw, sh)
-            ScaleMode.NONE -> Pair(rw.toFloat(), rh.toFloat())
+            ScaleMode.NONE -> Pair(cw, ch)
         }
         // Never upscale on the CPU (the GPU does that) and stay under the texture limit.
-        val tw = min(target.first, rw.toFloat())
-        val th = min(target.second, rh.toFloat())
+        val tw = min(target.first, cw)
+        val th = min(target.second, ch)
         val k = min(1f, MAX_TEX / max(tw, th))
         val outW = max(1, (tw * k).roundToInt())
         val outH = max(1, (th * k).roundToInt())
 
-        var sample = 1
-        while (rw / (sample * 2) >= outW && rh / (sample * 2) >= outH) sample *= 2
-        val opts = BitmapFactory.Options().apply {
-            inSampleSize = sample
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        val region = decodeRegion(file.absolutePath, Rect(l, t, r, b), opts) ?: return null
-        var sharp = if (region.width != outW || region.height != outH) {
-            Bitmap.createScaledBitmap(region, outW, outH, true)
+        var sharp = if (c == null || c.inside) {
+            val l = cl.roundToInt().coerceIn(0, iw - 1)
+            val t = ct.roundToInt().coerceIn(0, ih - 1)
+            val r = cr.roundToInt().coerceIn(l + 1, iw)
+            val b = cb.roundToInt().coerceIn(t + 1, ih)
+            val region = decodeRegion(file.absolutePath, Rect(l, t, r, b), sampleOpts(r - l, b - t, outW, outH))
+                ?: return null
+            if (region.width != outW || region.height != outH) {
+                Bitmap.createScaledBitmap(region, outW, outH, true)
+            } else {
+                region
+            }
         } else {
-            region
+            composite(file.absolutePath, iw, ih, cl, ct, cw, ch, outW, outH, c.fill) ?: return null
         }
         if (blur > 0.01f) sharp = Blur.soften(sharp, blur)
         val fog = Blur.fog(sharp)
-        return Prepared(key, screen, sharp, fog, rw.toFloat(), rh.toFloat(), mode)
+        return Prepared(key, screen, sharp, fog, cw, ch, mode)
+    }
+
+    private fun sampleOpts(rw: Int, rh: Int, needW: Int, needH: Int): BitmapFactory.Options {
+        var sample = 1
+        while (rw / (sample * 2) >= needW && rh / (sample * 2) >= needH) sample *= 2
+        return BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+    }
+
+    /** A zoomed-out crop: the picture sits inside the frame, empty space gets the fill. */
+    private fun composite(
+        path: String, iw: Int, ih: Int,
+        cl: Float, ct: Float, cw: Float, ch: Float,
+        outW: Int, outH: Int, fill: String,
+    ): Bitmap? {
+        val kx = outW / cw
+        val ky = outH / ch
+        val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        canvas.drawColor(0xFF000000.toInt())
+        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+        if (fill == "blur") {
+            val small = BitmapFactory.decodeFile(path, sampleOpts(iw, ih, 160, 160))
+            if (small != null) {
+                val blurred = Blur.box(Bitmap.createScaledBitmap(small, max(8, small.width / 2), max(8, small.height / 2), true), 4, 3)
+                val s = max(outW.toFloat() / blurred.width, outH.toFloat() / blurred.height)
+                val dw = blurred.width * s
+                val dh = blurred.height * s
+                val fx = (outW - dw) / 2f
+                val fy = (outH - dh) / 2f
+                paint.alpha = 190
+                canvas.drawBitmap(blurred, null, RectF(fx, fy, fx + dw, fy + dh), paint)
+                paint.alpha = 255
+            }
+        }
+        val x0 = max(0f, cl)
+        val y0 = max(0f, ct)
+        val x1 = min(iw.toFloat(), cl + cw)
+        val y1 = min(ih.toFloat(), ct + ch)
+        if (x1 - x0 >= 1f && y1 - y0 >= 1f) {
+            val rect = Rect(x0.roundToInt(), y0.roundToInt(), x1.roundToInt().coerceAtLeast(x0.roundToInt() + 1), y1.roundToInt().coerceAtLeast(y0.roundToInt() + 1))
+            val dst = RectF((x0 - cl) * kx, (y0 - ct) * ky, (x1 - cl) * kx, (y1 - ct) * ky)
+            val needW = max(1, dst.width().roundToInt())
+            val needH = max(1, dst.height().roundToInt())
+            val region = decodeRegion(path, rect, sampleOpts(rect.width(), rect.height(), needW, needH))
+            if (region != null) canvas.drawBitmap(region, null, dst, paint)
+        }
+        return out
     }
 
     private fun decodeRegion(path: String, rect: Rect, opts: BitmapFactory.Options): Bitmap? {

@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MultiChoiceSegmentedButtonRow
@@ -47,13 +48,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import dev.amepaper.R
 import dev.amepaper.data.Album
 import dev.amepaper.data.BoolKey
 import dev.amepaper.data.FloatKey
@@ -131,7 +135,10 @@ fun WallpaperTab(push: (Route) -> Unit) {
     ) {
         Spacer(Modifier.height(16.dp))
         ActivateBanner()
-        CurrentWallpapersCard(lock = curLock, home = curHome)
+        CurrentWallpapersCard(lock = curLock, home = curHome) { img ->
+            val owner = albums.firstOrNull { a -> a.images.any { it.id == img.id } }
+            if (owner != null) push(Route.CropRoute(owner.id, img.id))
+        }
 
         Spacer(Modifier.height(16.dp))
         MultiChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -214,7 +221,7 @@ fun WallpaperTab(push: (Route) -> Unit) {
             )
         }
         Text(
-            "Tip: open a wallpaper in Library to set its crop and aspect ratio for the cover and main screens.",
+            "Tip: tap a wallpaper above (or in Library) to zoom in or out, crop, or reshape it for the cover and main screens.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = 6.dp, top = 8.dp, end = 6.dp),
@@ -279,7 +286,7 @@ private fun ActivateBanner() {
 }
 
 @Composable
-private fun CurrentWallpapersCard(lock: WallImage?, home: WallImage?) {
+private fun CurrentWallpapersCard(lock: WallImage?, home: WallImage?, onEdit: (WallImage) -> Unit) {
     val ctx = LocalContext.current
     val conf = LocalConfiguration.current
     val slot = if (conf.screenHeightDp >= conf.screenWidthDp * 1.5f) Slot.TALL else Slot.WIDE
@@ -309,16 +316,23 @@ private fun CurrentWallpapersCard(lock: WallImage?, home: WallImage?) {
                     fw = fh * aspect
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    PhoneFrame(lock, slot, fw, fh, "Lock")
-                    PhoneFrame(home, slot, fw, fh, "Home")
+                    PhoneFrame(lock, slot, fw, fh, "Lock", onEdit)
+                    PhoneFrame(home, slot, fw, fh, "Home", onEdit)
                 }
             }
+            Text(
+                "Tap a wallpaper to zoom & crop it",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }
 
 @Composable
-private fun PhoneFrame(img: WallImage?, slot: Slot, w: Dp, h: Dp, label: String) {
+private fun PhoneFrame(img: WallImage?, slot: Slot, w: Dp, h: Dp, label: String, onEdit: (WallImage) -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         val shape = RoundedCornerShape(min(w, h) * 0.1f)
         Box(
@@ -326,7 +340,8 @@ private fun PhoneFrame(img: WallImage?, slot: Slot, w: Dp, h: Dp, label: String)
                 .size(w, h)
                 .clip(shape)
                 .background(Color.Black)
-                .border(3.dp, Color.Black, shape),
+                .border(3.dp, Color.Black, shape)
+                .clickable(enabled = img != null) { if (img != null) onEdit(img) },
             contentAlignment = Alignment.Center,
         ) {
             if (img != null) {
@@ -335,11 +350,17 @@ private fun PhoneFrame(img: WallImage?, slot: Slot, w: Dp, h: Dp, label: String)
                 Text("Add images\nin Library", color = Color.White, style = MaterialTheme.typography.bodySmall)
             }
         }
-        Text(
-            label,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier.padding(top = 10.dp),
-        )
+        Row(Modifier.padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            if (img != null) {
+                Icon(
+                    painterResource(R.drawable.ic_crop),
+                    contentDescription = "Zoom & crop",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.padding(start = 6.dp).size(16.dp),
+                )
+            }
+        }
     }
 }
 
