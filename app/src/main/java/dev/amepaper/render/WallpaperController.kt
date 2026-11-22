@@ -132,6 +132,7 @@ class WallpaperController(
                 Changer.tick(app, System.currentTimeMillis())
                 main.postDelayed(tickRunnable, 30_000L)
             }
+            refresh(fade = false) // catch any edit made while the wallpaper was hidden
             pushFx()
             requestRender()
             kick()
@@ -164,6 +165,12 @@ class WallpaperController(
                 pushParams()
                 pushFx()
                 refresh(fade = true)
+            }
+            key == K.REFRESH.name -> {
+                prepared.clear()
+                loading.clear()
+                shownKey = null
+                refresh(fade = visible)
             }
             key in K.RAIN_KEYS -> pushParams()
             key in K.LIGHT_FX_KEYS -> pushFx()
@@ -238,6 +245,7 @@ class WallpaperController(
 
     private fun send(p: Prepared, fade: Boolean, durationMs: Float) {
         shownKey = p.key
+        writeStatus(describe(p.screen, null))
         val fx = fxFor(p.screen)
         val scroll = scrollFor(p.screen)
         val doFade = fade && visible
@@ -258,14 +266,29 @@ class WallpaperController(
         val hh = h
         try {
             io.execute {
-                val p: Prepared? = try {
+                var error: String? = null
+                var p: Prepared? = try {
                     if (img != null) ImagePrep.prepare(img, s, ww, hh, mode, blur, key)
                     else ImagePrep.placeholder(s, ww, hh, key)
                 } catch (t: Throwable) {
                     Log.e(TAG, "Couldn't prepare wallpaper", t)
+                    error = t.javaClass.simpleName + ": " + (t.message ?: "")
                     null
                 }
-                main.post { onLoaded(s, key, p, ww, hh, fade) }
+                if (p == null && img != null) {
+                    if (error == null) error = "couldn't read the picture file"
+                    // show the picture without its crop rather than nothing
+                    p = try {
+                        ImagePrep.prepare(img.copy(tall = null, wide = null), s, ww, hh, mode, blur, key)
+                    } catch (t: Throwable) {
+                        null
+                    }
+                }
+                val err = error
+                main.post {
+                    onLoaded(s, key, p, ww, hh, fade)
+                    if (err != null) writeStatus(describe(s, err))
+                }
             }
         } catch (e: Exception) {
             loading.remove(s)
@@ -279,6 +302,30 @@ class WallpaperController(
         if (keyFor(s) != key) return // settings changed while decoding; a newer load is coming
         prepared[s] = p
         if (s == screen) send(p, fade, 800f)
+    }
+
+    private fun describe(s: Screen, error: String?): String {
+        val img = Changer.current(sp, s)
+        val slot = Screens.slotFor(w, h)
+        val c = img?.crop(slot)
+        val where = if (s == Screen.HOME) "Home" else "Lock"
+        val shape = if (slot == dev.amepaper.data.Slot.TALL) "cover/tall" else "main/wide"
+        val cropText = when {
+            img == null -> "no picture in album"
+            c == null -> "no crop"
+            c.inside -> "crop ${c.aspect}"
+            else -> "crop ${c.aspect}, zoomed out, ${c.fill} fill"
+        }
+        val base = "$where · ${w}×$h ($shape) · $cropText"
+        return if (error != null) "$base · ERROR $error" else base
+    }
+
+    private fun writeStatus(text: String) {
+        if (preview) return
+        sp.edit()
+            .putString(K.ENGINE_STATUS.name, text)
+            .putLong(K.ENGINE_SEEN.name, System.currentTimeMillis())
+            .apply()
     }
 
     private fun kick() {

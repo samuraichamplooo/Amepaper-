@@ -60,6 +60,7 @@ import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -96,6 +97,7 @@ import androidx.compose.ui.unit.dp
 import dev.amepaper.R
 import dev.amepaper.data.Crop
 import dev.amepaper.data.Importer
+import dev.amepaper.data.K
 import dev.amepaper.data.Library
 import dev.amepaper.data.Prefs
 import dev.amepaper.data.Screens
@@ -161,6 +163,11 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
     val fillDims = mutableStateMapOf(Slot.TALL to (img.tall?.fillDim ?: 0.2f), Slot.WIDE to (img.wide?.fillDim ?: 0.2f))
     val fillSofts = mutableStateMapOf(Slot.TALL to (img.tall?.fillSoft ?: 0.3f), Slot.WIDE to (img.wide?.fillSoft ?: 0.3f))
     var freeFrame by mutableStateOf<Rect?>(null)
+
+    /** Copy this framing to the other screen (adapted to its shape) when saving. */
+    var bothScreens by mutableStateOf(
+        if (startSlot == Slot.TALL) img.wide == null else img.tall == null,
+    )
     var scale by mutableFloatStateOf(1f)
     var ox by mutableFloatStateOf(0f)
     var oy by mutableFloatStateOf(0f)
@@ -252,6 +259,43 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
 
     fun commit() {
         if (ready) work[slot] = crop()
+    }
+
+    /**
+     * The current framing re-made for the other screen: same centre and the same zoom level,
+     * in that screen's shape.
+     */
+    fun adaptedForOtherSlot(): Crop? {
+        val c = work[slot] ?: return null
+        if (!ready) return null
+        val other = if (slot == Slot.TALL) Slot.WIDE else Slot.TALL
+        val label2 = if (c.aspect == "screen" || c.aspect == "free") "screen" else c.aspect
+        val a1 = ((c.r - c.l) * bw) / max(1e-4f, (c.b - c.t) * bh)
+        val a2 = when (label2) {
+            "screen" -> Screens.aspect(sp, other)
+            "original" -> bw / bh
+            else -> {
+                val parts = label2.split(":")
+                (parts.getOrNull(0)?.toFloatOrNull() ?: 9f) / (parts.getOrNull(1)?.toFloatOrNull() ?: 16f)
+            }
+        }.coerceIn(0.2f, 5f)
+        val ia = bw / bh
+        val ch1 = (c.b - c.t) * bh
+        val coverH1 = if (ia > a1) bh else bw / a1
+        val zoom = coverH1 / max(1f, ch1)
+        val coverH2 = if (ia > a2) bh else bw / a2
+        val ch2 = coverH2 / zoom
+        val cw2 = ch2 * a2
+        val cx = (c.l + c.r) / 2f * bw
+        val cy = (c.t + c.b) / 2f * bh
+        fun place(center: Float, size: Float, full: Float): Float {
+            val lo = min(0f, full - size)
+            val hi = max(0f, full - size)
+            return (center - size / 2f).coerceIn(lo, hi)
+        }
+        val left = place(cx, cw2, bw)
+        val top = place(cy, ch2, bh)
+        return Crop(label2, left / bw, top / bh, (left + cw2) / bw, (top + ch2) / bh, c.fill, c.fillBlur, c.fillDim, c.fillSoft)
     }
 
     fun transform(centroid: Offset, pan: Offset, zoom: Float) {
@@ -461,7 +505,13 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
 
     fun store() {
         model.commit()
+        if (model.bothScreens) {
+            val other = if (model.slot == Slot.TALL) Slot.WIDE else Slot.TALL
+            model.adaptedForOtherSlot()?.let { model.work[other] = it }
+        }
         Library.setCrops(albumId, imageId, model.work[Slot.TALL], model.work[Slot.WIDE])
+        // make the live wallpaper reload right away
+        sp.edit().putLong(K.REFRESH.name, System.currentTimeMillis()).apply()
     }
 
     fun save() {
@@ -627,7 +677,21 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
                 )
             }
             Row(
-                Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 4.dp, bottom = 12.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { model.bothScreens = !model.bothScreens }
+                    .padding(horizontal = 20.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Same framing on cover & main screens",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(checked = model.bothScreens, onCheckedChange = { model.bothScreens = it })
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 2.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextButton(onClick = { model.reset() }) { Text("Reset") }

@@ -164,6 +164,7 @@ fun WallpaperTab(push: (Route) -> Unit) {
             val owner = albums.firstOrNull { a -> a.images.any { it.id == img.id } }
             if (owner != null) push(Route.CropRoute(owner.id, img.id))
         }
+        EngineStatus()
 
         Spacer(Modifier.height(16.dp))
         MultiChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -277,6 +278,71 @@ fun WallpaperTab(push: (Route) -> Unit) {
             },
             onDismiss = { pickFor = null },
         )
+    }
+}
+
+/** "amepaper", "home" (lock shows the home wallpaper), "other" or null if unknown. */
+fun lockScreenSource(ctx: Context): String? = try {
+    val wm = WallpaperManager.getInstance(ctx)
+    val lockId = wm.getWallpaperId(WallpaperManager.FLAG_LOCK)
+    when {
+        lockId < 0 -> "home"
+        android.os.Build.VERSION.SDK_INT >= 34 ->
+            if (wm.getWallpaperInfo(WallpaperManager.FLAG_LOCK)?.packageName == ctx.packageName) "amepaper" else "other"
+        else -> "other"
+    }
+} catch (_: Exception) {
+    null
+}
+
+@Composable
+private fun EngineStatus() {
+    val ctx = LocalContext.current
+    val status = pref(K.ENGINE_STATUS).value
+    val seen = pref(K.ENGINE_SEEN).value
+    var homeActive by remember { mutableStateOf(isWallpaperActive(ctx)) }
+    var lock by remember { mutableStateOf(lockScreenSource(ctx)) }
+    val owner = LocalLifecycleOwner.current
+    DisposableEffect(owner) {
+        val obs = LifecycleEventObserver { _, e ->
+            if (e == Lifecycle.Event.ON_RESUME) {
+                homeActive = isWallpaperActive(ctx)
+                lock = lockScreenSource(ctx)
+            }
+        }
+        owner.lifecycle.addObserver(obs)
+        onDispose { owner.lifecycle.removeObserver(obs) }
+    }
+    val lockText = when {
+        lock == "amepaper" || (lock == "home" && homeActive) -> "Amepaper"
+        lock == "home" -> "same as home (not Amepaper)"
+        lock == "other" -> "its own wallpaper, not Amepaper"
+        else -> "unknown"
+    }
+    val lastText = if (seen == 0L) {
+        "The live wallpaper hasn't drawn anything yet."
+    } else {
+        val t = android.text.format.DateFormat.getTimeFormat(ctx).format(java.util.Date(seen))
+        "Last drawn $t: $status"
+    }
+    Surface(
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+            Text(
+                "Home screen: " + (if (homeActive) "Amepaper" else "not Amepaper") + "  ·  Lock screen: $lockText",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (homeActive) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            )
+            Text(
+                lastText,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (status.contains("ERROR")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
     }
 }
 

@@ -113,6 +113,11 @@ object K {
     val WX_UPDATED = LongKey("wx_updated", 0L)
     val WX_DRY = StrKey("wx_dry", "clear") // clear | droplets | keep
 
+    // --- live wallpaper sync / status ---
+    val REFRESH = LongKey("refresh_token", 0L)       // bumped by the app to force a reload
+    val ENGINE_STATUS = StrKey("engine_status", "")  // what the wallpaper last drew (or an error)
+    val ENGINE_SEEN = LongKey("engine_seen", 0L)
+
     // --- appearance ---
     val DYNAMIC = BoolKey("dynamic_color", false)
     val AMOLED = BoolKey("amoled", false)
