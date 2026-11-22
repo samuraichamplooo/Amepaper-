@@ -8,6 +8,10 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import dev.amepaper.data.Changer
+import dev.amepaper.data.CropMath
+import dev.amepaper.data.Placement
+import dev.amepaper.data.Resolved
+import dev.amepaper.data.WallImage
 import dev.amepaper.data.K
 import dev.amepaper.data.Library
 import dev.amepaper.data.Prefs
@@ -204,10 +208,15 @@ class WallpaperController(
     private fun scrollFor(s: Screen): Boolean =
         s == Screen.HOME && sp.get(K.HSCROLL) && scaleMode() == ScaleMode.FILL
 
+    private fun placement(s: Screen): Placement = Placement.forSize(s, w, h)
+
+    private fun cropFor(img: WallImage, s: Screen): Resolved =
+        CropMath.resolve(img, placement(s), w.toFloat() / maxOf(1, h))
+
     private fun keyFor(s: Screen): String? {
         if (w == 0 || h == 0) return null
         val img = Changer.current(sp, s) ?: return ImagePrep.placeholderKey(s, w, h)
-        return ImagePrep.keyFor(img, s, w, h, scaleMode(), blurFor(s))
+        return ImagePrep.keyFor(img, cropFor(img, s).crop, s, w, h, scaleMode(), blurFor(s))
     }
 
     private fun pushParams() {
@@ -260,6 +269,7 @@ class WallpaperController(
         if (loading[s] == key) return
         loading[s] = key
         val img = Changer.current(sp, s)
+        val crop = img?.let { cropFor(it, s).crop }
         val mode = scaleMode()
         val blur = blurFor(s)
         val ww = w
@@ -268,7 +278,7 @@ class WallpaperController(
             io.execute {
                 var error: String? = null
                 var p: Prepared? = try {
-                    if (img != null) ImagePrep.prepare(img, s, ww, hh, mode, blur, key)
+                    if (img != null) ImagePrep.prepare(img, crop, s, ww, hh, mode, blur, key)
                     else ImagePrep.placeholder(s, ww, hh, key)
                 } catch (t: Throwable) {
                     Log.e(TAG, "Couldn't prepare wallpaper", t)
@@ -279,7 +289,7 @@ class WallpaperController(
                     if (error == null) error = "couldn't read the picture file"
                     // show the picture without its crop rather than nothing
                     p = try {
-                        ImagePrep.prepare(img.copy(tall = null, wide = null), s, ww, hh, mode, blur, key)
+                        ImagePrep.prepare(img, null, s, ww, hh, mode, blur, key)
                     } catch (t: Throwable) {
                         null
                     }
@@ -306,17 +316,15 @@ class WallpaperController(
 
     private fun describe(s: Screen, error: String?): String {
         val img = Changer.current(sp, s)
-        val slot = Screens.slotFor(w, h)
-        val c = img?.crop(slot)
-        val where = if (s == Screen.HOME) "Home" else "Lock"
-        val shape = if (slot == dev.amepaper.data.Slot.TALL) "cover/tall" else "main/wide"
+        val r = img?.let { cropFor(it, s) }
+        val c = r?.crop
         val cropText = when {
             img == null -> "no picture in album"
-            c == null -> "no crop"
-            c.inside -> "crop ${c.aspect}"
-            else -> "crop ${c.aspect}, zoomed out, ${c.fill} fill"
+            c == null -> "no framing set (uses Scaling)"
+            r.own -> "its own framing" + if (c.inside) "" else ", zoomed out with ${c.fill} fill"
+            else -> "following ${r.source?.label}" + if (c.inside) "" else ", zoomed out with ${c.fill} fill"
         }
-        val base = "$where · ${w}×$h ($shape) · $cropText"
+        val base = "${placement(s).label} · ${w}×$h · $cropText"
         return if (error != null) "$base · ERROR $error" else base
     }
 

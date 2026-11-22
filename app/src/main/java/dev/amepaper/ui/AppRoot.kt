@@ -25,11 +25,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import dev.amepaper.R
+import dev.amepaper.data.Screen
 
 sealed interface Route {
     data object Main : Route
     data class AlbumRoute(val id: String) : Route
-    data class CropRoute(val albumId: String, val imageId: String) : Route
+    data class CropRoute(val albumId: String, val imageId: String, val screen: Screen = Screen.HOME) : Route
     data object Settings : Route
 }
 
@@ -53,7 +54,7 @@ fun AppRoot() {
     when (val r = stack.last()) {
         Route.Main -> MainScreen(tab, { tab = it }, push)
         is Route.AlbumRoute -> AlbumScreen(r.id, push, pop)
-        is Route.CropRoute -> CropScreen(r.albumId, r.imageId, pop)
+        is Route.CropRoute -> CropScreen(r.albumId, r.imageId, r.screen, pop)
         Route.Settings -> SettingsScreen(pop)
     }
 }

@@ -101,7 +101,9 @@ import dev.amepaper.data.K
 import dev.amepaper.data.Library
 import dev.amepaper.data.Prefs
 import dev.amepaper.data.Screens
-import dev.amepaper.data.Slot
+import dev.amepaper.data.CropMath
+import dev.amepaper.data.Placement
+import dev.amepaper.data.Resolved
 import dev.amepaper.data.WallImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -145,29 +147,25 @@ private fun frameRect(area: IntSize, aspect: Float): Rect {
  * picture under it, which can be panned and zoomed in or out. Zooming out below "fill" leaves
  * empty space inside the frame, filled with a blurred copy of the picture or black.
  */
-private class CropModel(private val sp: SharedPreferences, img: WallImage, startSlot: Slot) {
+private class CropModel(private val sp: SharedPreferences, private val img: WallImage, start: Placement) {
     var bmp by mutableStateOf<ImageBitmap?>(null)
     var abmp by mutableStateOf<Bitmap?>(null)
     var area by mutableStateOf(IntSize.Zero)
-    var slot by mutableStateOf(startSlot)
-    val work = mutableStateMapOf(Slot.TALL to img.tall, Slot.WIDE to img.wide)
-    val labels = mutableStateMapOf(
-        Slot.TALL to (img.tall?.aspect ?: "screen"),
-        Slot.WIDE to (img.wide?.aspect ?: "screen"),
-    )
-    val fills = mutableStateMapOf(
-        Slot.TALL to (img.tall?.fill ?: "extend"),
-        Slot.WIDE to (img.wide?.fill ?: "extend"),
-    )
-    val fillBlurs = mutableStateMapOf(Slot.TALL to (img.tall?.fillBlur ?: 0.5f), Slot.WIDE to (img.wide?.fillBlur ?: 0.5f))
-    val fillDims = mutableStateMapOf(Slot.TALL to (img.tall?.fillDim ?: 0.2f), Slot.WIDE to (img.wide?.fillDim ?: 0.2f))
-    val fillSofts = mutableStateMapOf(Slot.TALL to (img.tall?.fillSoft ?: 0.3f), Slot.WIDE to (img.wide?.fillSoft ?: 0.3f))
+    var placement by mutableStateOf(start)
+    val pk: String get() = placement.key
+
+    /** Framings this picture has of its own (saved, plus edits made here), by placement key. */
+    val work = mutableStateMapOf<String, Crop>().apply { putAll(img.crops) }
+    private val labels = mutableStateMapOf<String, String>()
+    private val fills = mutableStateMapOf<String, String>()
+    private val fillBlurs = mutableStateMapOf<String, Float>()
+    private val fillDims = mutableStateMapOf<String, Float>()
+    private val fillSofts = mutableStateMapOf<String, Float>()
     var freeFrame by mutableStateOf<Rect?>(null)
 
-    /** Copy this framing to the other screen (adapted to its shape) when saving. */
-    var bothScreens by mutableStateOf(
-        if (startSlot == Slot.TALL) img.wide == null else img.tall == null,
-    )
+    /** On save, drop the other placements' own framings so they all follow this one. */
+    var applyAll by mutableStateOf(false)
+
     var scale by mutableFloatStateOf(1f)
     var ox by mutableFloatStateOf(0f)
     var oy by mutableFloatStateOf(0f)
@@ -175,19 +173,35 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
     val ready: Boolean get() = bmp != null && area.width > 0 && area.height > 0
     val bw: Float get() = (bmp?.width ?: 1).toFloat()
     val bh: Float get() = (bmp?.height ?: 1).toFloat()
-    val label: String get() = labels[slot] ?: "screen"
-    val fill: String get() = fills[slot] ?: "extend"
-    val fillBlur: Float get() = fillBlurs[slot] ?: 0.5f
-    val fillDim: Float get() = fillDims[slot] ?: 0.2f
-    val fillSoft: Float get() = fillSofts[slot] ?: 0.3f
+    fun aspectFor(p: Placement): Float = Screens.aspect(sp, p)
+
+    /** What a placement shows now: its own framing, or the one it follows. */
+    fun resolved(p: Placement = placement): Resolved = CropMath.resolve(img, work, p, aspectFor(p))
+
+    private val shown: Crop? get() = work[pk] ?: resolved().crop
+
+    val label: String get() = labels[pk] ?: (work[pk]?.aspect ?: "screen")
+    val fill: String get() = fills[pk] ?: (shown?.fill ?: "extend")
+    val fillBlur: Float get() = fillBlurs[pk] ?: (shown?.fillBlur ?: 0.5f)
+    val fillDim: Float get() = fillDims[pk] ?: (shown?.fillDim ?: 0.2f)
+    val fillSoft: Float get() = fillSofts[pk] ?: (shown?.fillSoft ?: 0.3f)
+
+    fun statusText(): String {
+        val r = resolved()
+        return when {
+            r.own -> "This screen has its own framing."
+            r.source != null -> "Following ${r.source.label}. Move or zoom to give this screen its own."
+            else -> "No framing yet: this screen uses the Scaling setting."
+        }
+    }
 
     private fun aspectOf(l: String): Float {
         val a = when (l) {
-            "screen" -> Screens.aspect(sp, slot)
+            "screen" -> aspectFor(placement)
             "original" -> bw / bh
             "free" -> {
-                val c = work[slot]
-                if (c != null) ((c.r - c.l) * bw) / max(0.0001f, (c.b - c.t) * bh) else Screens.aspect(sp, slot)
+                val c = shown
+                if (c != null) ((c.r - c.l) * bw) / max(0.0001f, (c.b - c.t) * bh) else aspectFor(placement)
             }
             else -> {
                 val parts = l.split(":")
@@ -225,11 +239,11 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
         oy = fr.center.y - bh * scale / 2f
     }
 
-    /** Place the picture according to the saved crop for the current slot. */
+    /** Place the picture according to this placement's framing (own or followed). */
     fun init() {
         if (!ready) return
         val fr = frame()
-        val c = work[slot]
+        val c = shown
         if (c == null) {
             scale = coverScale(fr)
             center(fr)
@@ -258,44 +272,7 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
     }
 
     fun commit() {
-        if (ready) work[slot] = crop()
-    }
-
-    /**
-     * The current framing re-made for the other screen: same centre and the same zoom level,
-     * in that screen's shape.
-     */
-    fun adaptedForOtherSlot(): Crop? {
-        val c = work[slot] ?: return null
-        if (!ready) return null
-        val other = if (slot == Slot.TALL) Slot.WIDE else Slot.TALL
-        val label2 = if (c.aspect == "screen" || c.aspect == "free") "screen" else c.aspect
-        val a1 = ((c.r - c.l) * bw) / max(1e-4f, (c.b - c.t) * bh)
-        val a2 = when (label2) {
-            "screen" -> Screens.aspect(sp, other)
-            "original" -> bw / bh
-            else -> {
-                val parts = label2.split(":")
-                (parts.getOrNull(0)?.toFloatOrNull() ?: 9f) / (parts.getOrNull(1)?.toFloatOrNull() ?: 16f)
-            }
-        }.coerceIn(0.2f, 5f)
-        val ia = bw / bh
-        val ch1 = (c.b - c.t) * bh
-        val coverH1 = if (ia > a1) bh else bw / a1
-        val zoom = coverH1 / max(1f, ch1)
-        val coverH2 = if (ia > a2) bh else bw / a2
-        val ch2 = coverH2 / zoom
-        val cw2 = ch2 * a2
-        val cx = (c.l + c.r) / 2f * bw
-        val cy = (c.t + c.b) / 2f * bh
-        fun place(center: Float, size: Float, full: Float): Float {
-            val lo = min(0f, full - size)
-            val hi = max(0f, full - size)
-            return (center - size / 2f).coerceIn(lo, hi)
-        }
-        val left = place(cx, cw2, bw)
-        val top = place(cy, ch2, bh)
-        return Crop(label2, left / bw, top / bh, (left + cw2) / bw, (top + ch2) / bh, c.fill, c.fillBlur, c.fillDim, c.fillSoft)
+        if (ready) work[pk] = crop()
     }
 
     fun transform(centroid: Offset, pan: Offset, zoom: Float) {
@@ -368,24 +345,24 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
 
     fun setLabel(l: String) {
         if (!ready) {
-            labels[slot] = l
+            labels[pk] = l
             return
         }
         commit()
         freeFrame = if (l == "free") frame() else null
-        labels[slot] = l
+        labels[pk] = l
         init()
         commit()
     }
 
     fun setFill(f: String) {
-        fills[slot] = f
+        fills[pk] = f
         commit()
     }
 
-    fun setFillBlur(v: Float) { fillBlurs[slot] = v; commit() }
-    fun setFillDim(v: Float) { fillDims[slot] = v; commit() }
-    fun setFillSoft(v: Float) { fillSofts[slot] = v; commit() }
+    fun setFillBlur(v: Float) { fillBlurs[pk] = v; commit() }
+    fun setFillDim(v: Float) { fillDims[pk] = v; commit() }
+    fun setFillSoft(v: Float) { fillSofts[pk] = v; commit() }
 
     /** The picture's rectangle on the canvas. */
     fun picRect(): Rect = Rect(ox, oy, ox + bw * scale, oy + bh * scale)
@@ -398,20 +375,21 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
         return p.left > fr.left + 0.5f || p.top > fr.top + 0.5f || p.right < fr.right - 0.5f || p.bottom < fr.bottom - 0.5f
     }
 
-    fun changeSlot(s: Slot) {
-        if (s == slot) return
-        slot = s
+    fun changePlacement(p: Placement) {
+        if (p == placement) return
+        placement = p
         freeFrame = null
         init()
     }
 
+    /** Drop this screen's own framing so it follows the others again. */
     fun reset() {
-        work[slot] = null
-        labels[slot] = "screen"
-        fills[slot] = "extend"
-        fillBlurs[slot] = 0.5f
-        fillDims[slot] = 0.2f
-        fillSofts[slot] = 0.3f
+        work.remove(pk)
+        labels.remove(pk)
+        fills.remove(pk)
+        fillBlurs.remove(pk)
+        fillDims.remove(pk)
+        fillSofts.remove(pk)
         freeFrame = null
         init()
     }
@@ -458,7 +436,7 @@ private class CropModel(private val sp: SharedPreferences, img: WallImage, start
 }
 
 @Composable
-fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
+fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () -> Unit) {
     val ctx = LocalContext.current
     val sp = remember { Prefs.sp(ctx) }
     val albums by Library.albums.collectAsState()
@@ -470,7 +448,7 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
 
     val conf = LocalConfiguration.current
     val model = remember(img.id, img.file) {
-        CropModel(sp, img, if (conf.screenHeightDp >= conf.screenWidthDp * 1.5f) Slot.TALL else Slot.WIDE)
+        CropModel(sp, img, Placement.forSize(startScreen, conf.screenWidthDp, conf.screenHeightDp))
     }
 
     LaunchedEffect(model) {
@@ -496,7 +474,7 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
             }
         }
     }
-    LaunchedEffect(model.slot, model.area, model.bmp) {
+    LaunchedEffect(model.placement, model.area, model.bmp) {
         model.freeFrame = null
         model.init()
     }
@@ -505,11 +483,9 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
 
     fun store() {
         model.commit()
-        if (model.bothScreens) {
-            val other = if (model.slot == Slot.TALL) Slot.WIDE else Slot.TALL
-            model.adaptedForOtherSlot()?.let { model.work[other] = it }
-        }
-        Library.setCrops(albumId, imageId, model.work[Slot.TALL], model.work[Slot.WIDE])
+        val mine = model.work[model.pk]
+        val crops: Map<String, Crop> = if (model.applyAll && mine != null) mapOf(model.pk to mine) else model.work.toMap()
+        Library.setCrops(albumId, imageId, crops)
         // make the live wallpaper reload right away
         sp.edit().putLong(K.REFRESH.name, System.currentTimeMillis()).apply()
     }
@@ -571,21 +547,21 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
         containerColor = MaterialTheme.colorScheme.background,
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-                SegmentedButton(
-                    selected = model.slot == Slot.TALL,
-                    onClick = { model.changeSlot(Slot.TALL) },
-                    shape = SegmentedButtonDefaults.itemShape(0, 2),
-                ) { Text("Cover screen") }
-                SegmentedButton(
-                    selected = model.slot == Slot.WIDE,
-                    onClick = { model.changeSlot(Slot.WIDE) },
-                    shape = SegmentedButtonDefaults.itemShape(1, 2),
-                ) { Text("Main screen") }
+            // which of the 8 screens this framing is for
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                val p = model.placement
+                PlacementChip(if (p.screen == Screen.HOME) "Home" else "Lock") { model.changePlacement(p.otherScreen) }
+                PlacementChip(p.disp.label) { model.changePlacement(p.otherDisp) }
+                PlacementChip(p.orient.label) { model.changePlacement(p.otherOrient) }
             }
             Text(
-                if (model.label == "free") "Drag the corners or edges to reshape. Pinch or drag the picture to zoom and move it."
-                else "Pinch or use the slider to zoom in or out. Drag to move. Double-tap to switch fit / fill.",
+                model.statusText(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 20.dp),
@@ -661,7 +637,7 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
                         aiBusy = true
                         scope.launch {
                             model.commit()
-                            val c = model.work[model.slot] ?: model.crop()
+                            val c = model.work[model.pk] ?: model.crop()
                             val uri = withContext(Dispatchers.IO) { AiHandoff.export(ctx, img, c) }
                             aiBusy = false
                             if (uri != null) {
@@ -679,16 +655,16 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clickable { model.bothScreens = !model.bothScreens }
+                    .clickable { model.applyAll = !model.applyAll }
                     .padding(horizontal = 20.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "Same framing on cover & main screens",
+                    "Use this framing on all 8 screens",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                 )
-                Switch(checked = model.bothScreens, onCheckedChange = { model.bothScreens = it })
+                Switch(checked = model.applyAll, onCheckedChange = { model.applyAll = it })
             }
             Row(
                 Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 2.dp, bottom = 12.dp),
@@ -702,6 +678,11 @@ fun CropScreen(albumId: String, imageId: String, pop: () -> Unit) {
             }
         }
     }
+}
+
+@Composable
+private fun PlacementChip(text: String, onClick: () -> Unit) {
+    AssistChip(onClick = onClick, label = { Text("$text  ⇄") })
 }
 
 @Composable

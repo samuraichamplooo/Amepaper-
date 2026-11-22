@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -40,7 +41,11 @@ import coil.size.Size
 import coil.transform.Transformation
 import dev.amepaper.data.Crop
 import dev.amepaper.data.Library
-import dev.amepaper.data.Slot
+import dev.amepaper.data.CropMath
+import dev.amepaper.data.Placement
+import dev.amepaper.data.Prefs
+import dev.amepaper.data.Screen
+import dev.amepaper.data.Screens
 import dev.amepaper.data.WallImage
 import dev.amepaper.render.FillRenderer
 import kotlin.math.roundToInt
@@ -185,11 +190,24 @@ class CropTransformation(private val crop: Crop) : Transformation {
     }
 }
 
-/** Thumbnail of a library image, showing the crop for [slot] when there is one. */
+/** The placement matching the screen the app is on right now (folded/unfolded, orientation). */
 @Composable
-fun WallThumb(img: WallImage, slot: Slot?, modifier: Modifier = Modifier, sizePx: Int = 900) {
+fun currentPlacement(screen: Screen): Placement {
+    val conf = LocalConfiguration.current
+    return Placement.forSize(screen, conf.screenWidthDp, conf.screenHeightDp)
+}
+
+/** The framing [img] uses on [p] (its own or the one it follows). */
+@Composable
+fun cropOn(img: WallImage, p: Placement): Crop? {
     val ctx = LocalContext.current
-    val crop = slot?.let { img.crop(it) }
+    return remember(img, p) { CropMath.resolve(img, p, Screens.aspect(Prefs.sp(ctx), p)).crop }
+}
+
+/** Thumbnail of a library image, showing [crop] when there is one. */
+@Composable
+fun WallThumb(img: WallImage, crop: Crop?, modifier: Modifier = Modifier, sizePx: Int = 900) {
+    val ctx = LocalContext.current
     val request = remember(img.id, crop, sizePx) {
         val b = ImageRequest.Builder(ctx)
             .data(Library.file(img))

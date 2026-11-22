@@ -66,7 +66,6 @@ import dev.amepaper.data.Library
 import dev.amepaper.data.Prefs
 import dev.amepaper.data.Screen
 import dev.amepaper.data.Screens
-import dev.amepaper.data.Slot
 import dev.amepaper.data.WallImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -164,9 +163,8 @@ fun AlbumScreen(albumId: String, push: (Route) -> Unit, pop: () -> Unit) {
         }
     }
 
-    val conf = LocalConfiguration.current
-    val slot = if (conf.screenHeightDp >= conf.screenWidthDp * 1.5f) Slot.TALL else Slot.WIDE
-    val aspect = Screens.aspect(Prefs.sp(ctx), slot).coerceIn(0.4f, 1f)
+    val homeP = currentPlacement(Screen.HOME)
+    val aspect = Screens.aspect(Prefs.sp(ctx), homeP).coerceIn(0.4f, 1.8f)
 
     Scaffold(
         topBar = {
@@ -227,7 +225,7 @@ fun AlbumScreen(albumId: String, push: (Route) -> Unit, pop: () -> Unit) {
                             onLongClick = { menuFor = img },
                         ),
                 ) {
-                    WallThumb(img, slot, Modifier.fillMaxSize(), sizePx = 500)
+                    WallThumb(img, cropOn(img, homeP), Modifier.fillMaxSize(), sizePx = 500)
                     if (img.hasCrop) {
                         Box(
                             Modifier

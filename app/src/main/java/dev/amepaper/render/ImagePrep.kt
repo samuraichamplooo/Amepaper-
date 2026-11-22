@@ -13,7 +13,6 @@ import dev.amepaper.data.Crop
 import dev.amepaper.data.Library
 import dev.amepaper.data.ScaleMode
 import dev.amepaper.data.Screen
-import dev.amepaper.data.Screens
 import dev.amepaper.data.WallImage
 import kotlin.math.max
 import kotlin.math.min
@@ -35,14 +34,12 @@ class Prepared(
 object ImagePrep {
     private const val MAX_TEX = 4096f
 
-    fun keyFor(img: WallImage, screen: Screen, w: Int, h: Int, mode: ScaleMode, blur: Float): String {
-        val slot = Screens.slotFor(w, h)
-        return "${img.id}|${img.file}|$slot|${img.crop(slot)}|${w}x$h|$mode|$blur|$screen"
-    }
+    fun keyFor(img: WallImage, crop: Crop?, screen: Screen, w: Int, h: Int, mode: ScaleMode, blur: Float): String =
+        "${img.id}|${img.file}|$crop|${w}x$h|$mode|$blur|$screen"
 
     fun placeholderKey(screen: Screen, w: Int, h: Int): String = "placeholder|${w}x$h|$screen"
 
-    fun prepare(img: WallImage, screen: Screen, w: Int, h: Int, mode: ScaleMode, blur: Float, key: String): Prepared? {
+    fun prepare(img: WallImage, crop: Crop?, screen: Screen, w: Int, h: Int, mode: ScaleMode, blur: Float, key: String): Prepared? {
         val file = Library.file(img)
         if (!file.exists()) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -51,7 +48,7 @@ object ImagePrep {
         val ih = bounds.outHeight
         if (iw <= 0 || ih <= 0) return null
 
-        val c = img.crop(Screens.slotFor(w, h))
+        val c = crop
         // Crop rectangle in image pixels; may reach outside the picture when zoomed out.
         val cl = (c?.l ?: 0f) * iw
         val ct = (c?.t ?: 0f) * ih

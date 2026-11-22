@@ -59,11 +59,10 @@ data class WallImage(
     val file: String,
     val w: Int,
     val h: Int,
-    val tall: Crop? = null,
-    val wide: Crop? = null,
+    /** Framings the user set, keyed by [Placement.key]. Others follow these (see CropMath). */
+    val crops: Map<String, Crop> = emptyMap(),
 ) {
-    fun crop(slot: Slot): Crop? = if (slot == Slot.TALL) tall else wide
-    val hasCrop: Boolean get() = tall != null || wide != null
+    val hasCrop: Boolean get() = crops.isNotEmpty()
 }
 
 data class Album(val id: String, val name: String, val images: List<WallImage>)
@@ -148,18 +147,18 @@ object Library {
             list.map { a ->
                 if (a.id != albumId) a
                 else a.copy(images = a.images.map {
-                    if (it.id == imageId) it.copy(file = newImg.file, w = newImg.w, h = newImg.h, tall = null, wide = null) else it
+                    if (it.id == imageId) it.copy(file = newImg.file, w = newImg.w, h = newImg.h, crops = emptyMap()) else it
                 })
             }
         }
         if (old.file != newImg.file) runCatching { file(old).delete() }
     }
 
-    fun setCrops(albumId: String, imageId: String, tall: Crop?, wide: Crop?) {
+    fun setCrops(albumId: String, imageId: String, crops: Map<String, Crop>) {
         update { list ->
             list.map { a ->
                 if (a.id != albumId) a
-                else a.copy(images = a.images.map { if (it.id == imageId) it.copy(tall = tall, wide = wide) else it })
+                else a.copy(images = a.images.map { if (it.id == imageId) it.copy(crops = crops) else it })
             }
         }
     }
@@ -187,13 +186,25 @@ object Library {
                     name = a.optString("name", "Album"),
                     images = (0 until imgs.length()).map { j ->
                         val o = imgs.getJSONObject(j)
+                        val crops = LinkedHashMap<String, Crop>()
+                        val co = o.optJSONObject("crops")
+                        if (co != null) {
+                            val keys = co.keys()
+                            while (keys.hasNext()) {
+                                val k = keys.next()
+                                Crop.from(co.optJSONObject(k))?.let { crops[k] = it }
+                            }
+                        } else {
+                            // older versions: one crop for tall (cover) and one for wide (main) screens
+                            Crop.from(o.optJSONObject("tall"))?.let { crops["home-cover-portrait"] = it }
+                            Crop.from(o.optJSONObject("wide"))?.let { crops["home-main-portrait"] = it }
+                        }
                         WallImage(
                             id = o.getString("id"),
                             file = o.getString("file"),
                             w = o.optInt("w", 0),
                             h = o.optInt("h", 0),
-                            tall = Crop.from(o.optJSONObject("tall")),
-                            wide = Crop.from(o.optJSONObject("wide")),
+                            crops = crops,
                         )
                     },
                 )
@@ -212,8 +223,11 @@ object Library {
                 val imgs = JSONArray()
                 for (img in a.images) {
                     val o = JSONObject().put("id", img.id).put("file", img.file).put("w", img.w).put("h", img.h)
-                    img.tall?.let { o.put("tall", it.toJson()) }
-                    img.wide?.let { o.put("wide", it.toJson()) }
+                    if (img.crops.isNotEmpty()) {
+                        val co = JSONObject()
+                        img.crops.forEach { (k, c) -> co.put(k, c.toJson()) }
+                        o.put("crops", co)
+                    }
                     imgs.put(o)
                 }
                 arr.put(JSONObject().put("id", a.id).put("name", a.name).put("images", imgs))

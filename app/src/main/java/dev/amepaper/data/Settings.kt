@@ -25,8 +25,36 @@ enum class ScaleMode(val label: String) {
     }
 }
 
-/** Crop slots: tall screens (folded cover screen / normal phones) and wide screens (unfolded main screen). */
-enum class Slot { TALL, WIDE }
+/** Which physical screen: the folded cover screen (or a normal phone) or the unfolded main screen. */
+enum class Disp(val label: String) { COVER("Folded"), MAIN("Unfolded") }
+
+enum class Orient(val label: String) { PORTRAIT("Portrait"), LANDSCAPE("Landscape") }
+
+/**
+ * One of the 8 places a wallpaper can show: home or lock × folded or unfolded × portrait or
+ * landscape. Each can have its own framing (crop) per picture.
+ */
+data class Placement(val screen: Screen, val disp: Disp, val orient: Orient) {
+    val key: String get() = "${screen.name}-${disp.name}-${orient.name}".lowercase()
+
+    val label: String
+        get() = "${if (screen == Screen.HOME) "Home" else "Lock"} · ${disp.label} · ${orient.label}"
+
+    val otherScreen: Placement get() = copy(screen = if (screen == Screen.HOME) Screen.LOCK else Screen.HOME)
+    val otherDisp: Placement get() = copy(disp = if (disp == Disp.COVER) Disp.MAIN else Disp.COVER)
+    val otherOrient: Placement
+        get() = copy(orient = if (orient == Orient.PORTRAIT) Orient.LANDSCAPE else Orient.PORTRAIT)
+
+    companion object {
+        val ALL: List<Placement> = Screen.entries.flatMap { s ->
+            Disp.entries.flatMap { d -> Orient.entries.map { o -> Placement(s, d, o) } }
+        }
+
+        /** The placement for a screen of [w]×[h] (pixels or dp, only the shape matters). */
+        fun forSize(screen: Screen, w: Int, h: Int): Placement =
+            Placement(screen, Screens.dispFor(w, h), if (w > h) Orient.LANDSCAPE else Orient.PORTRAIT)
+    }
+}
 
 object Prefs {
     const val FILE = "amepaper"
@@ -149,24 +177,30 @@ object K {
 }
 
 object Screens {
-    const val DEFAULT_TALL = 9f / 21f // Galaxy Z Fold cover screen
-    const val DEFAULT_WIDE = 0.9f     // Galaxy Z Fold main screen (portrait)
+    const val DEFAULT_COVER = 9f / 21f // Galaxy Z Fold cover screen, portrait (width / height)
+    const val DEFAULT_MAIN = 0.9f      // Galaxy Z Fold main screen, portrait
 
-    fun slotFor(w: Int, h: Int): Slot =
-        if (h.toFloat() / maxOf(1, w) >= 1.5f) Slot.TALL else Slot.WIDE
+    /** Long, narrow screens are the cover screen (or a normal phone); squarish ones the main screen. */
+    fun dispFor(w: Int, h: Int): Disp {
+        val long = maxOf(w, h).toFloat()
+        val short = maxOf(1, minOf(w, h)).toFloat()
+        return if (long / short >= 1.5f) Disp.COVER else Disp.MAIN
+    }
 
-    /** Remember the shape of the screens this device has, so crops can default to them. */
+    /** Remember each screen's real shape (stored as its portrait width / height). */
     fun record(ctx: Context, w: Int, h: Int) {
-        if (w <= 0 || h <= 0 || w > h) return
+        if (w <= 0 || h <= 0) return
         val sp = Prefs.sp(ctx)
-        val key = if (slotFor(w, h) == Slot.TALL) K.ASPECT_TALL else K.ASPECT_WIDE
-        val a = w.toFloat() / h
+        val key = if (dispFor(w, h) == Disp.COVER) K.ASPECT_TALL else K.ASPECT_WIDE
+        val a = minOf(w, h).toFloat() / maxOf(w, h)
         if (kotlin.math.abs(sp.get(key) - a) > 0.004f) sp.edit().putFloat(key.name, a).apply()
     }
 
-    fun aspect(sp: SharedPreferences, slot: Slot): Float {
-        val v = sp.get(if (slot == Slot.TALL) K.ASPECT_TALL else K.ASPECT_WIDE)
-        return if (v > 0f) v else if (slot == Slot.TALL) DEFAULT_TALL else DEFAULT_WIDE
+    /** Width / height of the screen a placement stands for. */
+    fun aspect(sp: SharedPreferences, p: Placement): Float {
+        val v = sp.get(if (p.disp == Disp.COVER) K.ASPECT_TALL else K.ASPECT_WIDE)
+        val portrait = if (v > 0f) v else if (p.disp == Disp.COVER) DEFAULT_COVER else DEFAULT_MAIN
+        return if (p.orient == Orient.LANDSCAPE) 1f / portrait else portrait
     }
 }
 

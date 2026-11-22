@@ -70,7 +70,7 @@ import dev.amepaper.data.Prefs
 import dev.amepaper.data.ScaleMode
 import dev.amepaper.data.Screen
 import dev.amepaper.data.Screens
-import dev.amepaper.data.Slot
+import dev.amepaper.data.Placement
 import dev.amepaper.data.WallImage
 import dev.amepaper.data.get
 import dev.amepaper.wallpaper.RainWallpaperService
@@ -160,9 +160,9 @@ fun WallpaperTab(push: (Route) -> Unit) {
     ) {
         Spacer(Modifier.height(16.dp))
         ActivateBanner()
-        CurrentWallpapersCard(lock = curLock, home = curHome) { img ->
+        CurrentWallpapersCard(lock = curLock, home = curHome) { img, screen ->
             val owner = albums.firstOrNull { a -> a.images.any { it.id == img.id } }
-            if (owner != null) push(Route.CropRoute(owner.id, img.id))
+            if (owner != null) push(Route.CropRoute(owner.id, img.id, screen))
         }
         EngineStatus()
 
@@ -377,14 +377,14 @@ private fun ActivateBanner() {
 }
 
 @Composable
-private fun CurrentWallpapersCard(lock: WallImage?, home: WallImage?, onEdit: (WallImage) -> Unit) {
+private fun CurrentWallpapersCard(lock: WallImage?, home: WallImage?, onEdit: (WallImage, Screen) -> Unit) {
     val ctx = LocalContext.current
-    val conf = LocalConfiguration.current
-    val slot = if (conf.screenHeightDp >= conf.screenWidthDp * 1.5f) Slot.TALL else Slot.WIDE
+    val homeP = currentPlacement(Screen.HOME)
+    val lockP = currentPlacement(Screen.LOCK)
     // read so the frames reshape after the first visit to the other screen
     val tall = pref(K.ASPECT_TALL).value
     val wide = pref(K.ASPECT_WIDE).value
-    val aspect = remember(slot, tall, wide) { Screens.aspect(Prefs.sp(ctx), slot) }
+    val aspect = remember(homeP, tall, wide) { Screens.aspect(Prefs.sp(ctx), homeP) }
 
     Surface(
         shape = RoundedCornerShape(28.dp),
@@ -407,8 +407,8 @@ private fun CurrentWallpapersCard(lock: WallImage?, home: WallImage?, onEdit: (W
                     fw = fh * aspect
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    PhoneFrame(lock, slot, fw, fh, "Lock", onEdit)
-                    PhoneFrame(home, slot, fw, fh, "Home", onEdit)
+                    PhoneFrame(lock, lockP, fw, fh, "Lock") { onEdit(it, Screen.LOCK) }
+                    PhoneFrame(home, homeP, fw, fh, "Home") { onEdit(it, Screen.HOME) }
                 }
             }
             Text(
@@ -423,7 +423,7 @@ private fun CurrentWallpapersCard(lock: WallImage?, home: WallImage?, onEdit: (W
 }
 
 @Composable
-private fun PhoneFrame(img: WallImage?, slot: Slot, w: Dp, h: Dp, label: String, onEdit: (WallImage) -> Unit) {
+private fun PhoneFrame(img: WallImage?, placement: Placement, w: Dp, h: Dp, label: String, onEdit: (WallImage) -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         val shape = RoundedCornerShape(min(w, h) * 0.1f)
         Box(
@@ -436,7 +436,7 @@ private fun PhoneFrame(img: WallImage?, slot: Slot, w: Dp, h: Dp, label: String,
             contentAlignment = Alignment.Center,
         ) {
             if (img != null) {
-                WallThumb(img, slot, Modifier.fillMaxSize())
+                WallThumb(img, cropOn(img, placement), Modifier.fillMaxSize())
             } else {
                 Text("Add images\nin Library", color = Color.White, style = MaterialTheme.typography.bodySmall)
             }
