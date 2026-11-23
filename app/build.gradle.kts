@@ -81,6 +81,7 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     // On-device AI fill (MI-GAN) with LiteRT, Google's on-device ML runtime, on the GPU
-    implementation("com.google.ai.edge.litert:litert:2.3.0")
-    implementation("com.google.ai.edge.litert:litert-gpu:2.3.0")
+    // (its lifecycle 2.10 dependency would drag in a newer Compose; the app's own lifecycle is enough)
+    implementation("com.google.ai.edge.litert:litert:2.3.0") { exclude(group = "androidx.lifecycle") }
+    implementation("com.google.ai.edge.litert:litert-gpu:2.3.0") { exclude(group = "androidx.lifecycle") }
 }
