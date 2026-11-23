@@ -3,6 +3,12 @@ package dev.amepaper.ui
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.widget.Toast
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.clickable
@@ -165,8 +171,29 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     private val fillSofts = mutableStateMapOf<String, Float>()
     var freeFrame by mutableStateOf<Rect?>(null)
 
-    /** On save, drop the other placements' own framings so they all follow this one. */
-    var applyAll by mutableStateOf(false)
+    /**
+     * true: one framing for every screen (saved on the screen you're holding, the rest follow it).
+     * false: editing only [placement].
+     */
+    var allMode by mutableStateOf(img.crops.size <= 1)
+    private val devicePlacement = start
+
+    fun isCustom(p: Placement): Boolean = work.containsKey(p.key)
+
+    val scopeLabel: String get() = if (allMode) "All screens" else placement.label
+
+    fun hintText(): String =
+        if (allMode) "One framing, fitted to every screen" else statusText()
+
+    fun editAll() {
+        allMode = true
+        changePlacement(devicePlacement)
+    }
+
+    fun editOnly(p: Placement) {
+        allMode = false
+        changePlacement(p)
+    }
 
     /** Something was edited since opening (or the last save). */
     var dirty by mutableStateOf(false)
@@ -194,9 +221,9 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     fun statusText(): String {
         val r = resolved()
         return when {
-            r.own -> "Own framing for this screen"
-            r.source != null -> "Following ${r.source.label}"
-            else -> "No framing yet (uses Scaling)"
+            r.own -> "Custom framing for this screen only"
+            r.source != null -> "Uses the ${r.source.label} framing until you change it"
+            else -> "No framing yet; uses the Scaling setting"
         }
     }
 
@@ -393,12 +420,21 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     /** Drop this screen's own framing so it follows the others again. */
     fun reset() {
         dirty = true
-        work.remove(pk)
-        labels.remove(pk)
-        fills.remove(pk)
-        fillBlurs.remove(pk)
-        fillDims.remove(pk)
-        fillSofts.remove(pk)
+        if (allMode) {
+            work.clear()
+            labels.clear()
+            fills.clear()
+            fillBlurs.clear()
+            fillDims.clear()
+            fillSofts.clear()
+        } else {
+            work.remove(pk)
+            labels.remove(pk)
+            fills.remove(pk)
+            fillBlurs.remove(pk)
+            fillDims.remove(pk)
+            fillSofts.remove(pk)
+        }
         freeFrame = null
         init()
     }
@@ -488,12 +524,10 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
         model.init()
     }
 
-    var applying by remember { mutableStateOf(false) }
-
     fun store() {
         model.commit()
         val mine = model.work[model.pk]
-        val crops: Map<String, Crop> = if (model.applyAll && mine != null) mapOf(model.pk to mine) else model.work.toMap()
+        val crops: Map<String, Crop> = if (model.allMode && mine != null) mapOf(model.pk to mine) else model.work.toMap()
         Library.setCrops(albumId, imageId, crops)
         model.dirty = false
         // make the live wallpaper reload right away
@@ -514,31 +548,9 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
     }
 
     fun applyTo(screens: List<Screen>) {
-        applying = false
         store()
         applyWallpaper(ctx, albumId, imageId, screens)
         pop()
-    }
-
-    if (applying) {
-        AlertDialog(
-            onDismissRequest = { applying = false },
-            title = { Text("Set as wallpaper") },
-            text = {
-                Column {
-                    Text(
-                        "Saves your edits and shows this picture now. Scheduled changes carry on from here.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 8.dp),
-                    )
-                    ApplyOption("Home screen") { applyTo(listOf(Screen.HOME)) }
-                    ApplyOption("Lock screen") { applyTo(listOf(Screen.LOCK)) }
-                    ApplyOption("Home & lock screens") { applyTo(listOf(Screen.HOME, Screen.LOCK)) }
-                }
-            },
-            confirmButton = { TextButton(onClick = { applying = false }) { Text("Cancel") } },
-        )
     }
 
     var fullPreview by remember { mutableStateOf(false) }
@@ -601,7 +613,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(if (fullPreview) "Preview" else "Zoom & crop") },
+                title = { Text(if (fullPreview) "Preview" else "Edit wallpaper") },
                 navigationIcon = {
                     IconButton(onClick = {
                         val wasFull = fullPreview
@@ -612,13 +624,13 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
                     }
                 },
                 actions = {
+                    if (!fullPreview) TextButton(onClick = { model.reset() }) { Text("Reset") }
                     IconButton(onClick = { fullPreview = !fullPreview }) {
                         Icon(
                             painterResource(if (fullPreview) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen),
                             contentDescription = if (fullPreview) "Show controls" else "Bigger preview",
                         )
                     }
-                    IconButton(onClick = { save() }) { Icon(Icons.Filled.Check, contentDescription = "Save") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
@@ -626,29 +638,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
         containerColor = MaterialTheme.colorScheme.background,
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            // which of the 8 screens this framing is for
-            if (!fullPreview) Row(
-                Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                val p = model.placement
-                PlacementChip(if (p.screen == Screen.HOME) "Home" else "Lock") { model.changePlacement(p.otherScreen) }
-                PlacementChip(p.disp.label) { model.changePlacement(p.otherDisp) }
-                PlacementChip(p.orient.label) { model.changePlacement(p.otherOrient) }
-            }
-            if (!fullPreview) {
-                Text(
-                    model.statusText(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                )
-            }
+            if (!fullPreview) EditForBar(model)
 
             Box(
                 Modifier
@@ -718,36 +708,143 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
                         else -> FillPanel(model, onAi = { aiDialog = true })
                     }
                 }
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
                 Row(
-                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 2.dp, bottom = 10.dp),
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    TextButton(onClick = { model.reset() }) { Text("Reset") }
-                    Spacer(Modifier.weight(1f))
-                    OutlinedButton(onClick = { save() }) { Text("Save") }
-                    Spacer(Modifier.width(8.dp))
-                    Button(onClick = { applying = true }, enabled = model.ready) { Text("Set wallpaper") }
+                    OutlinedButton(onClick = { save() }, modifier = Modifier.weight(1f)) { Text("Save") }
+                    SetWallpaperButton(
+                        enabled = model.ready,
+                        modifier = Modifier.weight(1.6f),
+                        onBoth = { applyTo(listOf(Screen.HOME, Screen.LOCK)) },
+                        onHome = { applyTo(listOf(Screen.HOME)) },
+                        onLock = { applyTo(listOf(Screen.LOCK)) },
+                    )
                 }
             }
         }
     }
 }
 
+/** "Edit for: All screens ▾" — pick one framing for everything, or a single screen. */
 @Composable
-private fun PlacementChip(text: String, onClick: () -> Unit) {
-    AssistChip(onClick = onClick, label = { Text("$text  ⇄") })
+private fun EditForBar(model: CropModel) {
+    var open by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Edit for",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 10.dp),
+            )
+            Box {
+                FilledTonalButton(
+                    onClick = { open = true },
+                    contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+                ) {
+                    Text(model.scopeLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
+                }
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                    DropdownMenuItem(
+                        text = {
+                            Column {
+                                Text("All screens")
+                                Text(
+                                    "One framing, fitted to each screen",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        },
+                        onClick = {
+                            open = false
+                            model.editAll()
+                        },
+                        trailingIcon = { if (model.allMode) Icon(Icons.Filled.Check, contentDescription = null) },
+                    )
+                    for (scr in listOf(Screen.HOME, Screen.LOCK)) {
+                        HorizontalDivider()
+                        Text(
+                            if (scr == Screen.HOME) "Home screen only" else "Lock screen only",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(start = 16.dp, top = 10.dp, bottom = 2.dp),
+                        )
+                        Placement.ALL.filter { it.screen == scr }.forEach { p ->
+                            DropdownMenuItem(
+                                text = { Text("${p.disp.label} · ${p.orient.label}") },
+                                onClick = {
+                                    open = false
+                                    model.editOnly(p)
+                                },
+                                trailingIcon = {
+                                    when {
+                                        !model.allMode && model.placement == p -> Icon(Icons.Filled.Check, contentDescription = null)
+                                        model.isCustom(p) -> Text(
+                                            "Custom",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary,
+                                        )
+                                        else -> Unit
+                                    }
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Text(
+            model.hintText(),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = 2.dp),
+        )
+    }
 }
 
+/** "Set wallpaper" sets home & lock in one tap; the ▾ part offers one screen only. */
 @Composable
-private fun ApplyOption(text: String, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
-            .padding(vertical = 14.dp, horizontal = 8.dp),
-    ) {
-        Text(text, style = MaterialTheme.typography.bodyLarge)
+private fun SetWallpaperButton(
+    enabled: Boolean,
+    modifier: Modifier,
+    onBoth: () -> Unit,
+    onHome: () -> Unit,
+    onLock: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Row(modifier) {
+        Button(
+            onClick = onBoth,
+            enabled = enabled,
+            shape = RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp, topEnd = 4.dp, bottomEnd = 4.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp),
+            modifier = Modifier.weight(1f),
+        ) {
+            Text("Set wallpaper", maxLines = 1)
+        }
+        Spacer(Modifier.width(2.dp))
+        Box {
+            Button(
+                onClick = { open = true },
+                enabled = enabled,
+                shape = RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp, topEnd = 20.dp, bottomEnd = 20.dp),
+                contentPadding = PaddingValues(horizontal = 6.dp),
+            ) {
+                Icon(Icons.Filled.ArrowDropDown, contentDescription = "More options")
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                DropdownMenuItem(text = { Text("Home & lock screens") }, onClick = { open = false; onBoth() })
+                DropdownMenuItem(text = { Text("Home screen only") }, onClick = { open = false; onHome() })
+                DropdownMenuItem(text = { Text("Lock screen only") }, onClick = { open = false; onLock() })
+            }
+        }
     }
 }
 
@@ -812,22 +909,8 @@ private fun ShapePanel(model: CropModel) {
             "Screen matches this display exactly. Free lets you drag the frame's corners and edges.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .clickable { model.applyAll = !model.applyAll }
-                .padding(horizontal = 20.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Use this framing on all 8 screens",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.weight(1f),
-            )
-            Switch(checked = model.applyAll, onCheckedChange = { model.applyAll = it })
-        }
     }
 }
 
@@ -856,7 +939,7 @@ private fun FillPanel(model: CropModel, onAi: () -> Unit) {
                 "Zoom out below 100% to make room for the fill.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 20.dp),
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
         val names = listOf("Blur", "Darken", "Blend edges")
@@ -880,7 +963,7 @@ private fun FillPanel(model: CropModel, onAi: () -> Unit) {
             1 -> model.fillDim
             else -> model.fillSoft
         }
-        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Slider(
                 value = value,
                 onValueChange = {
@@ -905,7 +988,7 @@ private fun FillPanel(model: CropModel, onAi: () -> Unit) {
 @Composable
 private fun MiniSlider(title: String, value: Float, onChange: (Float) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.width(96.dp))
