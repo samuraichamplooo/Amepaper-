@@ -259,6 +259,7 @@ object AiFill {
     // ---------------------------------------------------------------- Gemini (Nano Banana)
 
     val GEMINI_MODELS = listOf(
+        "gemini-nano-banana-2.1" to "Nano Banana 2.1 · newest, Flash-level cost",
         "gemini-3.1-flash-image" to "Nano Banana 2 · about 7¢ a fill",
         "gemini-3-pro-image" to "Nano Banana Pro · about 13¢ a fill",
     )

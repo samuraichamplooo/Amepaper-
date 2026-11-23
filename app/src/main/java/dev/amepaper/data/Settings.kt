@@ -151,7 +151,7 @@ object K {
     val CF_TOKEN = StrKey("cf_token", "")
     val CF_MODEL = StrKey("cf_model", "@cf/black-forest-labs/flux-2-klein-4b")
     val GEMINI_KEY = StrKey("gemini_key", "")
-    val GEMINI_MODEL = StrKey("gemini_model", "gemini-3.1-flash-image")
+    val GEMINI_MODEL = StrKey("gemini_model", "gemini-nano-banana-2.1")
 
     // --- appearance ---
     val DYNAMIC = BoolKey("dynamic_color", false)
