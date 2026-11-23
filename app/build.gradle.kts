@@ -51,6 +51,8 @@ android {
             "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
             "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi",
             "-opt-in=androidx.compose.foundation.layout.ExperimentalLayoutApi",
+            // LiteRT is built with a newer Kotlin; its plain classes read fine with this compiler
+            "-Xskip-metadata-version-check",
         )
     }
     buildFeatures {
