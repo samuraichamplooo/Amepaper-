@@ -168,6 +168,9 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     /** On save, drop the other placements' own framings so they all follow this one. */
     var applyAll by mutableStateOf(false)
 
+    /** Something was edited since opening (or the last save). */
+    var dirty by mutableStateOf(false)
+
     var scale by mutableFloatStateOf(1f)
     var ox by mutableFloatStateOf(0f)
     var oy by mutableFloatStateOf(0f)
@@ -274,7 +277,10 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     }
 
     fun commit() {
-        if (ready) work[pk] = crop()
+        if (ready) {
+            work[pk] = crop()
+            dirty = true
+        }
     }
 
     fun transform(centroid: Offset, pan: Offset, zoom: Float) {
@@ -386,6 +392,7 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
 
     /** Drop this screen's own framing so it follows the others again. */
     fun reset() {
+        dirty = true
         work.remove(pk)
         labels.remove(pk)
         fills.remove(pk)
@@ -488,6 +495,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
         val mine = model.work[model.pk]
         val crops: Map<String, Crop> = if (model.applyAll && mine != null) mapOf(model.pk to mine) else model.work.toMap()
         Library.setCrops(albumId, imageId, crops)
+        model.dirty = false
         // make the live wallpaper reload right away
         sp.edit().putLong(K.REFRESH.name, System.currentTimeMillis()).apply()
     }
@@ -496,10 +504,10 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
         store()
         val showing = Screen.entries.filter { Changer.current(sp, it)?.id == imageId }
         val msg = when {
-            !isWallpaperActive(ctx) -> "Saved. Tap Set wallpaper to use it."
+            !isWallpaperActive(ctx) -> "Saved with this picture. Tap Set wallpaper to use it."
             showing.size == 2 -> "Saved and updated on your home & lock screens"
             showing.size == 1 -> "Saved and updated on your ${if (showing[0] == Screen.HOME) "home" else "lock"} screen"
-            else -> "Saved. It's not on screen right now; tap Set wallpaper to show it."
+            else -> "Saved with this picture. It'll look like this every time it comes up in rotation."
         }
         Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
         pop()
@@ -535,6 +543,16 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
 
     var fullPreview by remember { mutableStateOf(false) }
     var aiDialog by remember { mutableStateOf(false) }
+
+    // Leaving the editor keeps your edits (they're used whenever this picture comes up again).
+    fun leave() {
+        if (model.dirty && model.ready) {
+            store()
+            Toast.makeText(ctx, "Edits saved with this picture", Toast.LENGTH_SHORT).show()
+        }
+        pop()
+    }
+    BackHandler(enabled = !fullPreview) { leave() }
     BackHandler(enabled = fullPreview) { fullPreview = false }
 
     fun runAi() {
@@ -585,7 +603,13 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
             TopAppBar(
                 title = { Text(if (fullPreview) "Preview" else "Zoom & crop") },
                 navigationIcon = {
-                    IconButton(onClick = pop) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                    IconButton(onClick = {
+                        val wasFull = fullPreview
+                        fullPreview = false
+                        if (!wasFull) leave()
+                    }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
                 },
                 actions = {
                     IconButton(onClick = { fullPreview = !fullPreview }) {

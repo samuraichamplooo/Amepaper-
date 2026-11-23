@@ -206,7 +206,7 @@ fun AlbumScreen(albumId: String, push: (Route) -> Unit, pop: () -> Unit) {
                         LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
                     }
                     Text(
-                        if (album.images.isEmpty()) "No wallpapers yet." else "Tap a wallpaper to zoom & crop it. Long-press for more.",
+                        if (album.images.isEmpty()) "No wallpapers yet." else "Tap a wallpaper to zoom & crop it; edits stay with it every time it comes up. Long-press for more.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 10.dp, start = 4.dp),
