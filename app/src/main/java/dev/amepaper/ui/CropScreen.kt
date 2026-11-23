@@ -3,6 +3,8 @@ package dev.amepaper.ui
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
@@ -128,7 +130,7 @@ private fun ratioLabel(r: String): String = when (r) {
 private enum class Handle { TL, TR, BL, BR, L, R, T, B }
 
 private fun frameRect(area: IntSize, aspect: Float): Rect {
-    val m = 40f
+    val m = 24f
     val aw = max(1f, area.width - 2 * m)
     val ah = max(1f, area.height - 2 * m)
     var fw = aw
@@ -189,9 +191,9 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     fun statusText(): String {
         val r = resolved()
         return when {
-            r.own -> "This screen has its own framing."
-            r.source != null -> "Following ${r.source.label}. Move or zoom to give this screen its own."
-            else -> "No framing yet: this screen uses the Scaling setting."
+            r.own -> "Own framing for this screen"
+            r.source != null -> "Following ${r.source.label}"
+            else -> "No framing yet (uses Scaling)"
         }
     }
 
@@ -531,14 +533,67 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
         )
     }
 
+    var fullPreview by remember { mutableStateOf(false) }
+    var aiDialog by remember { mutableStateOf(false) }
+    BackHandler(enabled = fullPreview) { fullPreview = false }
+
+    fun runAi() {
+        aiBusy = true
+        scope.launch {
+            model.commit()
+            val c = model.work[model.pk] ?: model.crop()
+            val uri = withContext(Dispatchers.IO) { AiHandoff.export(ctx, img, c) }
+            aiBusy = false
+            if (uri != null) {
+                AiHandoff.openEditor(ctx, uri)
+            } else {
+                Toast.makeText(ctx, "Couldn't save the picture for editing", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    if (aiDialog) {
+        AlertDialog(
+            onDismissRequest = { aiDialog = false },
+            title = { Text("AI generative fill") },
+            text = {
+                Text(
+                    "Saves this framing (empty space in black) to Pictures/Amepaper and opens it in your photo editor, " +
+                        "e.g. Galaxy AI Generative edit or Google Photos, to fill it with new content. " +
+                        "When you're done, come back and tap Use edited picture.",
+                )
+            },
+            confirmButton = {
+                TextButton(enabled = !aiBusy && model.ready && AiHandoff.supported(), onClick = {
+                    aiDialog = false
+                    runAi()
+                }) { Text("Open in AI editor") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    aiDialog = false
+                    replacePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }) { Text("Use edited picture") }
+            },
+        )
+    }
+
+    val panelMax = (conf.screenHeightDp * 0.25f).dp.coerceIn(110.dp, 230.dp)
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Zoom & crop") },
+                title = { Text(if (fullPreview) "Preview" else "Zoom & crop") },
                 navigationIcon = {
                     IconButton(onClick = pop) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
                 },
                 actions = {
+                    IconButton(onClick = { fullPreview = !fullPreview }) {
+                        Icon(
+                            painterResource(if (fullPreview) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen),
+                            contentDescription = if (fullPreview) "Show controls" else "Bigger preview",
+                        )
+                    }
                     IconButton(onClick = { save() }) { Icon(Icons.Filled.Check, contentDescription = "Save") }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -548,7 +603,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             // which of the 8 screens this framing is for
-            Row(
+            if (!fullPreview) Row(
                 Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
@@ -560,12 +615,16 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
                 PlacementChip(p.disp.label) { model.changePlacement(p.otherDisp) }
                 PlacementChip(p.orient.label) { model.changePlacement(p.otherOrient) }
             }
-            Text(
-                model.statusText(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 20.dp),
-            )
+            if (!fullPreview) {
+                Text(
+                    model.statusText(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 20.dp),
+                )
+            }
 
             Box(
                 Modifier
@@ -616,65 +675,35 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
                 if (model.bmp == null) CircularProgressIndicator() else EditorCanvas(model)
             }
 
-            // ---- tool switcher
-            SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
-                val tools = listOf("Zoom", "Shape", "Fill")
-                tools.forEachIndexed { i, name ->
-                    SegmentedButton(
-                        selected = tool == i,
-                        onClick = { tool = i },
-                        shape = SegmentedButtonDefaults.itemShape(i, tools.size),
-                    ) { Text(name) }
+            // ---- tools (capped so the preview keeps most of the screen)
+            if (!fullPreview) {
+                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    val tools = listOf("Zoom", "Shape", "Fill")
+                    tools.forEachIndexed { i, name ->
+                        SegmentedButton(
+                            selected = tool == i,
+                            onClick = { tool = i },
+                            shape = SegmentedButtonDefaults.itemShape(i, tools.size),
+                        ) { Text(name) }
+                    }
                 }
-            }
-            when (tool) {
-                0 -> ZoomPanel(model)
-                1 -> ShapePanel(model)
-                else -> FillPanel(
-                    model,
-                    aiBusy = aiBusy,
-                    onAi = {
-                        aiBusy = true
-                        scope.launch {
-                            model.commit()
-                            val c = model.work[model.pk] ?: model.crop()
-                            val uri = withContext(Dispatchers.IO) { AiHandoff.export(ctx, img, c) }
-                            aiBusy = false
-                            if (uri != null) {
-                                AiHandoff.openEditor(ctx, uri)
-                            } else {
-                                Toast.makeText(ctx, "Couldn't save the picture for editing", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    onReplace = {
-                        replacePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    },
-                )
-            }
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { model.applyAll = !model.applyAll }
-                    .padding(horizontal = 20.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "Use this framing on all 8 screens",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                Switch(checked = model.applyAll, onCheckedChange = { model.applyAll = it })
-            }
-            Row(
-                Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 2.dp, bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = { model.reset() }) { Text("Reset") }
-                Spacer(Modifier.weight(1f))
-                OutlinedButton(onClick = { save() }) { Text("Save") }
-                Spacer(Modifier.width(8.dp))
-                Button(onClick = { applying = true }, enabled = model.ready) { Text("Set wallpaper") }
+                Column(Modifier.heightIn(max = panelMax).verticalScroll(rememberScrollState())) {
+                    when (tool) {
+                        0 -> ZoomPanel(model)
+                        1 -> ShapePanel(model)
+                        else -> FillPanel(model, onAi = { aiDialog = true })
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 2.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    TextButton(onClick = { model.reset() }) { Text("Reset") }
+                    Spacer(Modifier.weight(1f))
+                    OutlinedButton(onClick = { save() }) { Text("Save") }
+                    Spacer(Modifier.width(8.dp))
+                    Button(onClick = { applying = true }, enabled = model.ready) { Text("Set wallpaper") }
+                }
             }
         }
     }
@@ -761,20 +790,27 @@ private fun ShapePanel(model: CropModel) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
         )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable { model.applyAll = !model.applyAll }
+                .padding(horizontal = 20.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Use this framing on all 8 screens",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.weight(1f),
+            )
+            Switch(checked = model.applyAll, onCheckedChange = { model.applyAll = it })
+        }
     }
 }
 
 @Composable
-private fun FillPanel(model: CropModel, aiBusy: Boolean, onAi: () -> Unit, onReplace: () -> Unit) {
-    Column(Modifier.heightIn(max = 300.dp).verticalScroll(rememberScrollState())) {
-        if (!model.hasEmptySpace()) {
-            Text(
-                "Zoom out below 100% (or tap Fit whole picture) to make room around the picture. These settings fill that space.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp),
-            )
-        }
+private fun FillPanel(model: CropModel, onAi: () -> Unit) {
+    var which by remember { mutableIntStateOf(0) } // 0 blur, 1 darken, 2 blend edges
+    Column {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -789,32 +825,55 @@ private fun FillPanel(model: CropModel, aiBusy: Boolean, onAi: () -> Unit, onRep
                     label = { Text(FillRenderer.label(m)) },
                 )
             }
+            AssistChip(onClick = onAi, label = { Text("AI fill…") })
         }
-        if (FillRenderer.usesBlur(model.fill)) {
-            MiniSlider("Blur", model.fillBlur) { model.setFillBlur(it) }
+        if (!model.hasEmptySpace()) {
+            Text(
+                "Zoom out below 100% to make room for the fill.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
         }
-        if (model.fill != "black") {
-            MiniSlider("Darken", model.fillDim) { model.setFillDim(it) }
+        val names = listOf("Blur", "Darken", "Blend edges")
+        val options = buildList {
+            if (FillRenderer.usesBlur(model.fill)) add(0)
+            if (model.fill != "black") add(1)
+            add(2)
         }
-        MiniSlider("Blend edges", model.fillSoft) { model.setFillSoft(it) }
-
-        if (AiHandoff.supported()) {
-            Column(Modifier.padding(horizontal = 20.dp, vertical = 6.dp)) {
-                Text("AI generative fill", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    "Saves this framing (empty space in black) to Pictures/Amepaper and opens it in your photo editor, " +
-                        "e.g. Galaxy AI Generative edit or Google Photos, to fill it with new content. " +
-                        "Then tap Use edited picture and pick the result.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onAi, enabled = !aiBusy && model.ready) {
-                        Text(if (aiBusy) "Saving…" else "Open in AI editor")
-                    }
-                    OutlinedButton(onClick = onReplace) { Text("Use edited picture") }
-                }
+        val sel = if (which in options) which else options.first()
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+            options.forEachIndexed { i, o ->
+                SegmentedButton(
+                    selected = sel == o,
+                    onClick = { which = o },
+                    shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                ) { Text(names[o], maxLines = 1) }
             }
+        }
+        val value = when (sel) {
+            0 -> model.fillBlur
+            1 -> model.fillDim
+            else -> model.fillSoft
+        }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Slider(
+                value = value,
+                onValueChange = {
+                    when (sel) {
+                        0 -> model.setFillBlur(it)
+                        1 -> model.setFillDim(it)
+                        else -> model.setFillSoft(it)
+                    }
+                },
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "${(value * 100).roundToInt()}%",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.width(44.dp).padding(start = 6.dp),
+            )
         }
     }
 }
