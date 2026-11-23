@@ -695,6 +695,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
     var aiStatus by remember { mutableStateOf<String?>(null) }
     var aiProgress by remember { mutableFloatStateOf(-1f) }
     var aiError by remember { mutableStateOf<String?>(null) }
+    var aiErrorEngine by remember { mutableStateOf<AiFill.Engine?>(null) }
     var aiSetup by remember { mutableStateOf<AiFill.Engine?>(null) }
     var askDownload by remember { mutableStateOf(false) }
 
@@ -740,6 +741,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Throwable) {
+                aiErrorEngine = engine
                 aiError = e.message ?: e.javaClass.simpleName
             } finally {
                 aiStatus = null
@@ -882,6 +884,15 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
             title = { Text("AI fill didn't work") },
             text = { Text(msg) },
             confirmButton = { TextButton(onClick = { aiError = null }) { Text("OK") } },
+            dismissButton = {
+                // one tap to the free offline engine when a cloud one fails
+                if (aiErrorEngine == AiFill.Engine.FLUX || aiErrorEngine == AiFill.Engine.GEMINI) {
+                    TextButton(onClick = {
+                        aiError = null
+                        generate(AiFill.Engine.DEVICE)
+                    }) { Text("Try on-device") }
+                }
+            },
         )
     }
 

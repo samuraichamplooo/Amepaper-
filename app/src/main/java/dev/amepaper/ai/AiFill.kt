@@ -181,6 +181,12 @@ object AiFill {
             "lighting, colors, perspective, depth of field and style, as if it had been captured wider. " +
             "Keep the existing picture exactly as it is. No black bars, borders, frames, text, logos or watermarks."
 
+    /** For the pre-filled input: the soft, blurry border is a placeholder to repaint. */
+    private const val PROMPT_PREFILLED =
+        "The soft, blurry areas around the edges of this picture are placeholders. Repaint them as sharp, detailed " +
+            "scenery that continues the picture naturally, matching its lighting, colors and style. " +
+            "Keep the sharp center picture unchanged. No borders, frames or text."
+
     /** Shorter wording used when retrying after the safety filter flags a result. */
     private const val PROMPT_PLAIN =
         "Extend this picture outward to fill the black areas around it with more of the same scenery. " +
@@ -211,6 +217,14 @@ object AiFill {
         val (iw, ih) = sizeFor(src, c, 496)
         val input = framing(src, c, iw, ih)
         val png = ByteArrayOutputStream().also { input.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        // a second version with the empty space roughly pre-filled (soft mirror) instead of black
+        val prefilled = runCatching {
+            val b = dev.amepaper.render.FillRenderer.compose(
+                src, c.l * src.width, c.t * src.height, (c.r - c.l) * src.width, (c.b - c.t) * src.height,
+                iw, ih, "mirror", 0.9f, 0f, 0.3f,
+            )
+            ByteArrayOutputStream().also { b.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
+        }.getOrDefault(png)
         val aspect = iw.toFloat() / ih
         val (ow, oh) = if (aspect >= 1f) {
             Pair(1280, snap16(1280 / aspect))
@@ -221,7 +235,9 @@ object AiFill {
         val url = "https://api.cloudflare.com/client/v4/accounts/$account/ai/run/$model"
         // FLUX's safety filter checks every generated picture and sometimes flags harmless ones.
         // It's random per picture, so a new seed (and a plainer prompt) almost always gets through.
-        val prompts = listOf(PROMPT, PROMPT_PLAIN, PROMPT_PLAIN)
+        // retries change the input picture too, not just the seed
+        val prompts = listOf(PROMPT, PROMPT_PREFILLED, PROMPT_PLAIN)
+        val inputs = listOf(png, prefilled, prefilled)
         var lastError = ""
         for (attempt in prompts.indices) {
             val boundary = "----amepaper" + UUID.randomUUID().toString().replace("-", "")
@@ -237,7 +253,7 @@ object AiFill {
                 ("--$boundary\r\nContent-Disposition: form-data; name=\"input_image_0\"; filename=\"frame.png\"\r\n" +
                     "Content-Type: image/png\r\n\r\n").toByteArray(),
             )
-            body.write(png)
+            body.write(inputs[attempt])
             body.write("\r\n--$boundary--\r\n".toByteArray())
 
             val resp = post(
@@ -267,8 +283,9 @@ object AiFill {
             return@withContext save(bmp, c)
         }
         throw IOException(
-            "FLUX's safety filter blocked the result ${prompts.size} times in a row. On a picture like this it's a false " +
-                "alarm. Tap FLUX again, switch to Klein 9B in Settings → AI fill, or use On-device or Gemini. ($lastError)",
+            "FLUX's safety filter blocked all ${prompts.size} tries on this picture. When it keeps happening on the " +
+                "same picture, something in it (often a person or a well-known character) is tripping the filter, " +
+                "so try On-device or Gemini for this one. ($lastError)",
         )
     }
 
