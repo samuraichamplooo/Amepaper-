@@ -182,10 +182,27 @@ class CropTransformation(private val crop: Crop) : Transformation {
         val cw = (crop.r - crop.l) * iw
         val ch = (crop.b - crop.t) * ih
         val k = minOf(1f, 1600f / maxOf(cw, ch))
+        val ow = maxOf(1, (cw * k).roundToInt())
+        val oh = maxOf(1, (ch * k).roundToInt())
+        var ai: Bitmap? = null
+        var aiDst: android.graphics.RectF? = null
+        if (crop.fill == "ai" && crop.aiFile != null) {
+            val f = Library.aiFile(crop.aiFile)
+            if (f.exists()) {
+                ai = android.graphics.BitmapFactory.decodeFile(
+                    f.absolutePath, android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 },
+                )
+                val kx = ow / cw
+                val ky = oh / ch
+                aiDst = android.graphics.RectF(
+                    (crop.aiL - crop.l) * iw * kx, (crop.aiT - crop.t) * ih * ky,
+                    (crop.aiR - crop.l) * iw * kx, (crop.aiB - crop.t) * ih * ky,
+                )
+            }
+        }
         return FillRenderer.compose(
-            input, crop.l * iw, crop.t * ih, cw, ch,
-            maxOf(1, (cw * k).roundToInt()), maxOf(1, (ch * k).roundToInt()),
-            crop.fill, crop.fillBlur, crop.fillDim, crop.fillSoft,
+            input, crop.l * iw, crop.t * ih, cw, ch, ow, oh,
+            crop.fill, crop.fillBlur, crop.fillDim, crop.fillSoft, ai, aiDst,
         )
     }
 }

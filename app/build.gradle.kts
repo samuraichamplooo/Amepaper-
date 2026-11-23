@@ -17,6 +17,8 @@ android {
         targetSdk = 34
         versionCode = buildNumber
         versionName = "1.0.$buildNumber"
+        // the on-device AI runtime ships native code; the Fold (and nearly every current phone) is arm64
+        ndk { abiFilters += listOf("arm64-v8a") }
     }
 
     signingConfigs {
@@ -77,4 +79,8 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.1")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // On-device AI fill (MI-GAN) with LiteRT, Google's on-device ML runtime, on the GPU
+    implementation("com.google.ai.edge.litert:litert:2.2.0")
+    implementation("com.google.ai.edge.litert:litert-gpu:2.2.0")
 }

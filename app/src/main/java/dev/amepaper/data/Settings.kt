@@ -146,6 +146,13 @@ object K {
     val ENGINE_STATUS = StrKey("engine_status", "")  // what the wallpaper last drew (or an error)
     val ENGINE_SEEN = LongKey("engine_seen", 0L)
 
+    // --- AI fill ---
+    val CF_ACCOUNT = StrKey("cf_account", "")
+    val CF_TOKEN = StrKey("cf_token", "")
+    val CF_MODEL = StrKey("cf_model", "@cf/black-forest-labs/flux-2-klein-4b")
+    val GEMINI_KEY = StrKey("gemini_key", "")
+    val GEMINI_MODEL = StrKey("gemini_model", "gemini-3.1-flash-image")
+
     // --- appearance ---
     val DYNAMIC = BoolKey("dynamic_color", false)
     val AMOLED = BoolKey("amoled", false)

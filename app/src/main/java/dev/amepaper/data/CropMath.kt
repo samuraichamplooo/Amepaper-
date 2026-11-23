@@ -32,7 +32,7 @@ object CropMath {
         }
         val left = place(cx, cw2, iw)
         val top = place(cy, ch2, ih)
-        return Crop("screen", left / iw, top / ih, (left + cw2) / iw, (top + ch2) / ih, c.fill, c.fillBlur, c.fillDim, c.fillSoft)
+        return c.copy(aspect = "screen", l = left / iw, t = top / ih, r = (left + cw2) / iw, b = (top + ch2) / ih)
     }
 
     /**

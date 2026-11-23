@@ -27,15 +27,28 @@ data class Crop(
     val fillBlur: Float = 0.5f,
     val fillDim: Float = 0.25f,
     val fillSoft: Float = 0.3f,
+    /** AI-generated fill (fill = "ai"): file in the ai folder and the area it covers (image fractions). */
+    val aiFile: String? = null,
+    val aiL: Float = 0f,
+    val aiT: Float = 0f,
+    val aiR: Float = 1f,
+    val aiB: Float = 1f,
 ) {
     /** True when the crop stays inside the picture (no empty space to fill). */
     val inside: Boolean
         get() = l >= -0.0005f && t >= -0.0005f && r <= 1.0005f && b <= 1.0005f
 
-    fun toJson(): JSONObject = JSONObject()
-        .put("a", aspect).put("l", l.toDouble()).put("t", t.toDouble())
-        .put("r", r.toDouble()).put("b", b.toDouble()).put("f", fill)
-        .put("fb", fillBlur.toDouble()).put("fd", fillDim.toDouble()).put("fs", fillSoft.toDouble())
+    fun toJson(): JSONObject {
+        val o = JSONObject()
+            .put("a", aspect).put("l", l.toDouble()).put("t", t.toDouble())
+            .put("r", r.toDouble()).put("b", b.toDouble()).put("f", fill)
+            .put("fb", fillBlur.toDouble()).put("fd", fillDim.toDouble()).put("fs", fillSoft.toDouble())
+        if (aiFile != null) {
+            o.put("ai", aiFile).put("al", aiL.toDouble()).put("at", aiT.toDouble())
+                .put("ar", aiR.toDouble()).put("ab", aiB.toDouble())
+        }
+        return o
+    }
 
     companion object {
         fun from(o: JSONObject?): Crop? {
@@ -48,6 +61,9 @@ data class Crop(
                 o.optDouble("fb", 0.5).toFloat(),
                 o.optDouble("fd", 0.25).toFloat(),
                 o.optDouble("fs", 0.3).toFloat(),
+                if (o.has("ai")) o.optString("ai") else null,
+                o.optDouble("al", 0.0).toFloat(), o.optDouble("at", 0.0).toFloat(),
+                o.optDouble("ar", 1.0).toFloat(), o.optDouble("ab", 1.0).toFloat(),
             )
             return if (c.r - c.l > 0.001f && c.b - c.t > 0.001f) c else null
         }
@@ -106,6 +122,17 @@ object Library {
 
     fun imageDir(): File = File(dir ?: File("/"), "img").also { it.mkdirs() }
 
+    fun aiDir(): File = File(dir ?: File("/"), "ai").also { it.mkdirs() }
+
+    fun aiFile(name: String): File = File(aiDir(), name)
+
+    /** Deletes AI fills no picture uses any more. [keep] protects files still being edited. */
+    fun cleanAi(keep: Set<String> = emptySet()) {
+        val used = HashSet<String>(keep)
+        for (a in _albums.value) for (img in a.images) for (c in img.crops.values) c.aiFile?.let { used.add(it) }
+        aiDir().listFiles()?.forEach { f -> if (f.name !in used) runCatching { f.delete() } }
+    }
+
     fun album(id: String): Album? = _albums.value.firstOrNull { it.id == id }
 
     fun createAlbum(name: String): Album {
@@ -126,6 +153,7 @@ object Library {
             val rest = list.filter { it.id != id }
             rest.ifEmpty { listOf(Album(newId(), "My walls", emptyList())) }
         }
+        cleanAi()
     }
 
     fun addImage(albumId: String, img: WallImage) {
@@ -138,6 +166,7 @@ object Library {
             list.map { a -> if (a.id == albumId) a.copy(images = a.images.filter { it.id != imageId }) else a }
         }
         if (img != null) runCatching { file(img).delete() }
+        cleanAi()
     }
 
     /** Swap in a new picture file (e.g. one extended in an AI editor), keeping the same id. */
@@ -152,6 +181,7 @@ object Library {
             }
         }
         if (old.file != newImg.file) runCatching { file(old).delete() }
+        cleanAi()
     }
 
     fun setCrops(albumId: String, imageId: String, crops: Map<String, Crop>) {
@@ -161,6 +191,7 @@ object Library {
                 else a.copy(images = a.images.map { if (it.id == imageId) it.copy(crops = crops) else it })
             }
         }
+        cleanAi()
     }
 
     private fun update(f: (List<Album>) -> List<Album>) {

@@ -120,10 +120,25 @@ object ImagePrep {
         // crop rectangle in the decoded region's own pixels
         val sx = region.width.toFloat() / (x1 - x0)
         val sy = region.height.toFloat() / (y1 - y0)
+        var ai: Bitmap? = null
+        var aiDst: RectF? = null
+        if (crop.fill == "ai" && crop.aiFile != null) {
+            val f = Library.aiFile(crop.aiFile)
+            if (f.exists()) {
+                val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(f.absolutePath, b)
+                ai = BitmapFactory.decodeFile(f.absolutePath, sampleOpts(b.outWidth, b.outHeight, outW, outH))
+                aiDst = RectF(
+                    (crop.aiL * iw - cl) * kx, (crop.aiT * ih - ct) * ky,
+                    (crop.aiR * iw - cl) * kx, (crop.aiB * ih - ct) * ky,
+                )
+            }
+        }
         return FillRenderer.compose(
             region,
             (cl - x0) * sx, (ct - y0) * sy, cw * sx, ch * sy,
             outW, outH, crop.fill, crop.fillBlur, crop.fillDim, crop.fillSoft,
+            ai, aiDst,
         )
     }
 

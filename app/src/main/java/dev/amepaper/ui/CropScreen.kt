@@ -38,6 +38,10 @@ import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.nativeCanvas
 import dev.amepaper.render.AiHandoff
+import dev.amepaper.ai.AiFill
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.LinearProgressIndicator
 import dev.amepaper.render.FillRenderer
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.Canvas
@@ -176,6 +180,10 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     private val fillBlurs = mutableStateMapOf<String, Float>()
     private val fillDims = mutableStateMapOf<String, Float>()
     private val fillSofts = mutableStateMapOf<String, Float>()
+    /** AI fills made here, by placement key (a null value means removed). */
+    private val ais = mutableStateMapOf<String, AiFill.Result?>()
+    /** Decoded AI fills for the preview, by file name. */
+    val aiCache = mutableStateMapOf<String, Bitmap>()
     var freeFrame by mutableStateOf<Rect?>(null)
 
     private val devicePlacement = start
@@ -256,6 +264,33 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     val fillBlur: Float get() = fillBlurs[pk] ?: (shown?.fillBlur ?: 0.65f)
     val fillDim: Float get() = fillDims[pk] ?: (shown?.fillDim ?: 0.2f)
     val fillSoft: Float get() = fillSofts[pk] ?: (shown?.fillSoft ?: 0.4f)
+    val ai: AiFill.Result?
+        get() = if (ais.containsKey(pk)) {
+            ais[pk]
+        } else {
+            shown?.let { c -> c.aiFile?.let { AiFill.Result(it, c.aiL, c.aiT, c.aiR, c.aiB) } }
+        }
+
+    /** Use a finished AI fill on the screen it was made for. */
+    fun setAi(r: AiFill.Result, key: String) {
+        ais[key] = r
+        fills[key] = "ai"
+        if (key == pk) {
+            commit()
+        } else {
+            work[key]?.let { work[key] = it.copy(fill = "ai", aiFile = r.file, aiL = r.l, aiT = r.t, aiR = r.r, aiB = r.b) }
+            dirty = true
+        }
+    }
+
+    /** The frame now reaches past what the AI filled (the rest falls back to Mirror). */
+    fun aiShort(): Boolean {
+        val a = ai ?: return false
+        if (!ready) return false
+        val c = crop()
+        val e = 0.003f
+        return c.l < a.l - e || c.t < a.t - e || c.r > a.r + e || c.b > a.b + e
+    }
 
     /** CPU-rendered fill for the preview (matches the real wallpaper exactly). */
     var fillPreview by mutableStateOf<ImageBitmap?>(null)
@@ -283,6 +318,8 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
         val blur: Float,
         val dim: Float,
         val src: Bitmap,
+        val ai: Bitmap?,
+        val aiDst: android.graphics.RectF?,
     )
 
     /** Everything the fill preview depends on, captured now (null when nothing to fill). */
@@ -291,7 +328,21 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
         if (!ready || !hasEmptySpace()) return null
         val fr = frame()
         val (sr, vis) = visible(fr)
-        return FillSpec(android.graphics.RectF(fr.left, fr.top, fr.right, fr.bottom), sr, vis, fill, fillBlur, fillDim, a)
+        val ref = if (fill == "ai") ai else null
+        val aiBmp = ref?.let { aiCache[it.file] }
+        val p = picRect()
+        val aiDst = if (ref != null && aiBmp != null) {
+            android.graphics.RectF(
+                p.left + ref.l * bw * scale, p.top + ref.t * bh * scale,
+                p.left + ref.r * bw * scale, p.top + ref.b * bh * scale,
+            )
+        } else {
+            null
+        }
+        return FillSpec(
+            android.graphics.RectF(fr.left, fr.top, fr.right, fr.bottom), sr, vis, fill, fillBlur, fillDim, a,
+            aiBmp, aiDst,
+        )
     }
 
     fun statusText(): String {
@@ -376,6 +427,7 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
             ((fr.right - ox) / iw).coerceIn(-4f, 5f),
             ((fr.bottom - oy) / ih).coerceIn(-4f, 5f),
             fill, fillBlur, fillDim, fillSoft,
+            ai?.file, ai?.l ?: 0f, ai?.t ?: 0f, ai?.r ?: 1f, ai?.b ?: 1f,
         )
     }
 
@@ -467,6 +519,14 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     }
 
     fun setFill(f: String) {
+        // an AI fill looks best crisp and undarkened; the others keep their ambient defaults
+        if (f == "ai" && fill != "ai") {
+            fillBlurs[pk] = 0.1f
+            fillDims[pk] = 0f
+        } else if (f != "ai" && fill == "ai") {
+            fillBlurs[pk] = 0.65f
+            fillDims[pk] = 0.2f
+        }
         fills[pk] = f
         commit()
     }
@@ -503,6 +563,7 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
             fillBlurs.clear()
             fillDims.clear()
             fillSofts.clear()
+            ais.clear()
         } else {
             for (q in selection) {
                 work.remove(q.key)
@@ -511,6 +572,7 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
                 fillBlurs.remove(q.key)
                 fillDims.remove(q.key)
                 fillSofts.remove(q.key)
+                ais.remove(q.key)
             }
         }
         freeFrame = null
@@ -610,9 +672,98 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
             }
             delay(20)
             val bmp = withContext(Dispatchers.Default) {
-                FillRenderer.preview(spec.src, spec.srcRect, spec.frame, spec.visible, spec.mode, spec.blur, spec.dim)
+                FillRenderer.preview(
+                    spec.src, spec.srcRect, spec.frame, spec.visible, spec.mode, spec.blur, spec.dim, spec.ai, spec.aiDst,
+                )
             }
             model.fillPreview = bmp.asImageBitmap()
+        }
+    }
+
+    // decode the AI fill for the preview when one is in use
+    val aiFile = model.ai?.file
+    LaunchedEffect(aiFile) {
+        if (aiFile != null && !model.aiCache.containsKey(aiFile)) {
+            val b = withContext(Dispatchers.IO) {
+                val f = Library.aiFile(aiFile)
+                if (f.exists()) BitmapFactory.decodeFile(f.absolutePath) else null
+            }
+            if (b != null) model.aiCache[aiFile] = b
+        }
+    }
+
+    var aiStatus by remember { mutableStateOf<String?>(null) }
+    var aiProgress by remember { mutableFloatStateOf(-1f) }
+    var aiError by remember { mutableStateOf<String?>(null) }
+    var aiSetup by remember { mutableStateOf<AiFill.Engine?>(null) }
+    var askDownload by remember { mutableStateOf(false) }
+
+    fun generate(engine: AiFill.Engine) {
+        val src = model.abmp ?: return
+        if (aiStatus != null || !model.ready) return
+        if (!model.hasEmptySpace()) {
+            Toast.makeText(ctx, "Zoom out below 100% first to make room", Toast.LENGTH_SHORT).show()
+            return
+        }
+        when (engine) {
+            AiFill.Engine.DEVICE -> if (!AiFill.modelReady(ctx)) {
+                askDownload = true
+                return
+            }
+            AiFill.Engine.FLUX -> if (!AiFill.fluxReady(sp)) {
+                aiSetup = engine
+                return
+            }
+            AiFill.Engine.GEMINI -> if (!AiFill.geminiReady(sp)) {
+                aiSetup = engine
+                return
+            }
+        }
+        model.commit()
+        val c = model.crop()
+        val key = model.pk
+        aiStatus = when (engine) {
+            AiFill.Engine.DEVICE -> "Filling on your phone…"
+            AiFill.Engine.FLUX -> "Generating with FLUX… (about 5–15 s)"
+            AiFill.Engine.GEMINI -> "Generating with Gemini… (about 10–20 s)"
+        }
+        scope.launch {
+            try {
+                val r = when (engine) {
+                    AiFill.Engine.DEVICE -> AiFill.onDevice(ctx, src, c)
+                    AiFill.Engine.FLUX -> AiFill.flux(sp, src, c)
+                    AiFill.Engine.GEMINI -> AiFill.gemini(sp, src, c)
+                }
+                val b = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(Library.aiFile(r.file).absolutePath) }
+                if (b != null) model.aiCache[r.file] = b
+                model.setAi(r, key)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                aiError = e.message ?: e.javaClass.simpleName
+            } finally {
+                aiStatus = null
+            }
+        }
+    }
+
+    fun downloadThenGenerate() {
+        aiStatus = "Downloading the on-device model…"
+        aiProgress = 0f
+        scope.launch {
+            var ok = false
+            try {
+                AiFill.downloadModel(ctx) { p -> aiProgress = p }
+                ok = true
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                aiError = e.message ?: "Download failed"
+            } finally {
+                aiStatus = null
+                aiProgress = -1f
+            }
+            if (ok) generate(AiFill.Engine.DEVICE)
         }
     }
 
@@ -676,7 +827,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
     if (aiDialog) {
         AlertDialog(
             onDismissRequest = { aiDialog = false },
-            title = { Text("AI generative fill") },
+            title = { Text("Fill in another app") },
             text = {
                 Text(
                     "Saves this framing (empty space in black) to Pictures/Amepaper and opens it in your photo editor, " +
@@ -696,6 +847,41 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
                     replacePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 }) { Text("Use edited picture") }
             },
+        )
+    }
+
+    if (askDownload) {
+        AlertDialog(
+            onDismissRequest = { askDownload = false },
+            title = { Text("Download on-device AI?") },
+            text = {
+                Text(
+                    "A one-time ${AiFill.MODEL_MB} MB download (MI-GAN, MIT license). After that it fills on your phone, " +
+                        "offline, in about a second. For richer results use FLUX (free) or Gemini.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    askDownload = false
+                    downloadThenGenerate()
+                }) { Text("Download") }
+            },
+            dismissButton = { TextButton(onClick = { askDownload = false }) { Text("Cancel") } },
+        )
+    }
+    aiSetup?.let { engine ->
+        AiSetupDialog(engine, confirm = "Generate", onDone = {
+            aiSetup = null
+            val ready = if (engine == AiFill.Engine.FLUX) AiFill.fluxReady(sp) else AiFill.geminiReady(sp)
+            if (ready) generate(engine)
+        })
+    }
+    aiError?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { aiError = null },
+            title = { Text("AI fill didn't work") },
+            text = { Text(msg) },
+            confirmButton = { TextButton(onClick = { aiError = null }) { Text("OK") } },
         )
     }
 
@@ -796,7 +982,13 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
                     when (tool) {
                         0 -> ZoomPanel(model)
                         1 -> ShapePanel(model)
-                        else -> FillPanel(model, onAi = { aiDialog = true })
+                        else -> FillPanel(
+                            model,
+                            aiStatus = aiStatus,
+                            aiProgress = aiProgress,
+                            onGenerate = { generate(it) },
+                            onHandoff = { aiDialog = true },
+                        )
                     }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.surfaceContainerHigh)
@@ -1060,7 +1252,13 @@ private fun ShapePanel(model: CropModel) {
 }
 
 @Composable
-private fun FillPanel(model: CropModel, onAi: () -> Unit) {
+private fun FillPanel(
+    model: CropModel,
+    aiStatus: String?,
+    aiProgress: Float,
+    onGenerate: (AiFill.Engine) -> Unit,
+    onHandoff: () -> Unit,
+) {
     var which by remember { mutableIntStateOf(0) } // 0 blur, 1 darken, 2 blend edges
     Column {
         Row(
@@ -1077,9 +1275,10 @@ private fun FillPanel(model: CropModel, onAi: () -> Unit) {
                     label = { Text(FillRenderer.label(m)) },
                 )
             }
-            AssistChip(onClick = onAi, label = { Text("AI fill…") })
         }
-        if (!model.hasEmptySpace()) {
+        if (model.fill == "ai") {
+            AiControls(model, aiStatus, aiProgress, onGenerate, onHandoff)
+        } else if (!model.hasEmptySpace()) {
             Text(
                 "Zoom out below 100% to make room for the fill.",
                 style = MaterialTheme.typography.bodySmall,
@@ -1087,7 +1286,7 @@ private fun FillPanel(model: CropModel, onAi: () -> Unit) {
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
-        val names = listOf("Blur", "Darken", "Blend edges")
+        val names = listOf(if (model.fill == "ai") "Soften" else "Blur", "Darken", "Blend edges")
         val options = buildList {
             if (FillRenderer.usesBlur(model.fill)) add(0)
             if (model.fill != "black") add(1)
@@ -1126,6 +1325,55 @@ private fun FillPanel(model: CropModel, onAi: () -> Unit) {
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.width(44.dp).padding(start = 6.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun AiControls(
+    model: CropModel,
+    status: String?,
+    progress: Float,
+    onGenerate: (AiFill.Engine) -> Unit,
+    onHandoff: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        if (status != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                Text(status, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(start = 10.dp))
+            }
+            if (progress >= 0f) {
+                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 6.dp))
+            }
+        } else {
+            Text(
+                when {
+                    !model.hasEmptySpace() -> "Zoom out below 100% first, then generate."
+                    model.ai == null -> "Generate new scenery for the empty space. Your picture stays untouched on top."
+                    model.aiShort() -> "The frame now goes past the AI fill (the rest uses Mirror). Generate again to cover it."
+                    else -> "AI fill applied. Not quite right? Generate again for a new take."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val enabled = model.hasEmptySpace()
+            val pad = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+            Row(
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilledTonalButton(onClick = { onGenerate(AiFill.Engine.FLUX) }, enabled = enabled, contentPadding = pad) {
+                    Text("FLUX · free")
+                }
+                OutlinedButton(onClick = { onGenerate(AiFill.Engine.DEVICE) }, enabled = enabled, contentPadding = pad) {
+                    Text("On-device")
+                }
+                OutlinedButton(onClick = { onGenerate(AiFill.Engine.GEMINI) }, enabled = enabled, contentPadding = pad) {
+                    Text("Gemini")
+                }
+                TextButton(onClick = onHandoff, contentPadding = pad) { Text("Other app…") }
+            }
         }
     }
 }

@@ -83,6 +83,8 @@ fun SettingsScreen(pop: () -> Unit) {
                 }
             }
 
+            AiSettingsSection()
+
             SectionLabel("About")
             GroupCard {
                 Column(Modifier.padding(20.dp)) {
@@ -94,7 +96,8 @@ fun SettingsScreen(pop: () -> Unit) {
                         modifier = Modifier.padding(top = 6.dp),
                     )
                     Text(
-                        "Weather data by Open-Meteo.com (CC BY 4.0). Shader hash functions by Dave Hoskins (MIT).",
+                        "Weather data by Open-Meteo.com (CC BY 4.0). Shader hash functions by Dave Hoskins (MIT). " +
+                            "On-device fill: MI-GAN by Picsart AI Research (MIT), run with Google LiteRT. Cloud fill: FLUX.2 [klein] by Black Forest Labs via Cloudflare Workers AI, and Google Gemini.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 10.dp),

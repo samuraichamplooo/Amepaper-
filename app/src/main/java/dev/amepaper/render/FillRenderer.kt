@@ -29,17 +29,18 @@ import kotlin.math.sqrt
  */
 object FillRenderer {
 
-    val MODES = listOf("mirror", "extend", "blur", "color", "black")
+    val MODES = listOf("mirror", "extend", "blur", "color", "black", "ai")
 
     fun label(mode: String): String = when (mode) {
         "extend" -> "Extend"
         "mirror" -> "Mirror"
         "blur" -> "Blur"
         "color" -> "Color"
+        "ai" -> "AI ✦"
         else -> "Black"
     }
 
-    fun usesBlur(mode: String) = mode == "blur" || mode == "extend" || mode == "mirror"
+    fun usesBlur(mode: String) = mode == "blur" || mode == "extend" || mode == "mirror" || mode == "ai"
 
     /** Blur radius as a fraction of the frame's short side (box-blur radius ≈ Gaussian sigma). */
     fun blurRadius(blur: Float, frameShortSide: Float): Float = blur.coerceIn(0f, 1f) * 0.06f * frameShortSide
@@ -132,7 +133,25 @@ object FillRenderer {
      * progressively: lightly next to the picture, more the farther away, so the fill flows out of
      * the picture's edges. Blur gives a zoomed, softly blurred "ambient" backdrop.
      */
-    fun renderFill(c: Canvas, frame: RectF, src: Bitmap?, srcRect: Rect?, pic: RectF, mode: String, blur: Float, dim: Float) {
+    fun renderFill(
+        c: Canvas, frame: RectF, src: Bitmap?, srcRect: Rect?, pic: RectF, mode: String, blur: Float, dim: Float,
+        ai: Bitmap? = null, aiDst: RectF? = null,
+    ) {
+        if (mode == "ai") {
+            // AI fill: a blurred mirror underneath (for any part the AI image doesn't cover), then the AI image
+            renderFill(c, frame, src, srcRect, pic, "mirror", max(blur, 0.6f), 0f)
+            if (ai != null && aiDst != null) {
+                val img = if (blur > 0.02f) softenAi(ai, blur) else ai
+                c.save()
+                c.clipRect(frame)
+                c.drawBitmap(img, null, aiDst, Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG))
+                c.restore()
+            }
+            if (dim > 0.01f) {
+                c.drawRect(frame, Paint().apply { color = Color.argb((dim.coerceIn(0f, 1f) * 255).roundToInt(), 0, 0, 0) })
+            }
+            return
+        }
         val black = Paint().apply { color = Color.BLACK }
         c.drawRect(frame, black)
         if (src == null || mode == "black") return
@@ -216,7 +235,10 @@ object FillRenderer {
      * The fill alone for the editor preview: [frame] and [pic] in editor pixels, [src] the
      * editor's copy of the picture with [srcRect] the part inside the frame. Rendered small.
      */
-    fun preview(src: Bitmap, srcRect: Rect, frame: RectF, pic: RectF, mode: String, blur: Float, dim: Float): Bitmap {
+    fun preview(
+        src: Bitmap, srcRect: Rect, frame: RectF, pic: RectF, mode: String, blur: Float, dim: Float,
+        ai: Bitmap? = null, aiDst: RectF? = null,
+    ): Bitmap {
         val k = min(1f, 720f / max(1f, max(frame.width(), frame.height())))
         val ow = max(8, (frame.width() * k).roundToInt())
         val oh = max(8, (frame.height() * k).roundToInt())
@@ -225,8 +247,20 @@ object FillRenderer {
             (pic.left - frame.left) * k, (pic.top - frame.top) * k,
             (pic.right - frame.left) * k, (pic.bottom - frame.top) * k,
         )
-        renderFill(Canvas(out), RectF(0f, 0f, ow.toFloat(), oh.toFloat()), src, srcRect, p, mode, blur, dim)
+        val ad = aiDst?.let {
+            RectF((it.left - frame.left) * k, (it.top - frame.top) * k, (it.right - frame.left) * k, (it.bottom - frame.top) * k)
+        }
+        renderFill(Canvas(out), RectF(0f, 0f, ow.toFloat(), oh.toFloat()), src, srcRect, p, mode, blur, dim, ai, ad)
         return out
+    }
+
+    /** Gentle softening for an AI fill (the slider's "Soften"); drawn scaled, so no need to upsize. */
+    private fun softenAi(src: Bitmap, blur: Float): Bitmap {
+        val f = 1f + blur.coerceIn(0f, 1f) * 5f
+        val sw = max(8, (src.width / f).roundToInt())
+        val sh = max(8, (src.height / f).roundToInt())
+        val small = Bitmap.createScaledBitmap(src, sw, sh, true)
+        return Blur.box(small, 1 + (blur * 2f).roundToInt(), 2)
     }
 
     /** A little film grain over the fill so smooth dark gradients don't show bands. */
@@ -286,6 +320,7 @@ object FillRenderer {
     fun compose(
         src: Bitmap, cl: Float, ct: Float, cw: Float, ch: Float, outW: Int, outH: Int,
         mode: String, blur: Float, dim: Float, soft: Float,
+        ai: Bitmap? = null, aiDst: RectF? = null,
     ): Bitmap {
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
@@ -302,8 +337,8 @@ object FillRenderer {
         }
         val sr = Rect(x0.roundToInt(), y0.roundToInt(), max(x0.roundToInt() + 1, x1.roundToInt()), max(y0.roundToInt() + 1, y1.roundToInt()))
         val pic = RectF((sr.left - cl) * kx, (sr.top - ct) * ky, (sr.right - cl) * kx, (sr.bottom - ct) * ky)
-        renderFill(c, frame, src, sr, pic, mode, blur, dim)
-        if (mode != "black") grain(out)
+        renderFill(c, frame, src, sr, pic, mode, blur, dim, ai, aiDst)
+        if (mode != "black" && mode != "ai") grain(out)
         drawPicture(c, src, sr, pic, frame, soft)
         return out
     }
