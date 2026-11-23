@@ -3,6 +3,10 @@ package dev.amepaper.ui
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.widget.Toast
+import androidx.compose.material3.Checkbox
+import androidx.compose.ui.text.style.TextAlign
+import dev.amepaper.data.Disp
+import dev.amepaper.data.Orient
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material3.DropdownMenu
@@ -171,28 +175,60 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     private val fillSofts = mutableStateMapOf<String, Float>()
     var freeFrame by mutableStateOf<Rect?>(null)
 
-    /**
-     * true: one framing for every screen (saved on the screen you're holding, the rest follow it).
-     * false: editing only [placement].
-     */
-    var allMode by mutableStateOf(img.crops.size <= 1)
     private val devicePlacement = start
+
+    /** The screens this edit applies to (any of the 8). The frame uses [placement]'s shape. */
+    var selection by mutableStateOf(if (img.crops.size <= 1) Placement.ALL.toSet() else setOf(start))
+        private set
+
+    val allSelected: Boolean get() = selection.size == Placement.ALL.size
 
     fun isCustom(p: Placement): Boolean = work.containsKey(p.key)
 
-    val scopeLabel: String get() = if (allMode) "All screens" else placement.label
-
-    fun hintText(): String =
-        if (allMode) "One framing, fitted to every screen" else statusText()
-
-    fun editAll() {
-        allMode = true
-        changePlacement(devicePlacement)
+    /** Which selected screen's shape to edit in: the one you're holding if possible. */
+    private fun primaryOf(sel: Set<Placement>): Placement = when {
+        devicePlacement in sel -> devicePlacement
+        devicePlacement.otherScreen in sel -> devicePlacement.otherScreen
+        else -> Placement.ALL.first { it in sel }
     }
 
-    fun editOnly(p: Placement) {
-        allMode = false
-        changePlacement(p)
+    fun select(sel: Set<Placement>) {
+        if (sel.isEmpty()) return
+        selection = sel
+        changePlacement(primaryOf(sel))
+    }
+
+    val selectionLabel: String
+        get() {
+            val sel = selection
+            val first = sel.first()
+            return when {
+                allSelected -> "All screens"
+                sel.size == 1 -> first.label
+                sel.size == 2 && first.otherScreen in sel -> "Home & lock · ${first.disp.label} · ${first.orient.label}"
+                else -> "${sel.size} screens"
+            }
+        }
+
+    fun hintText(): String = when {
+        allSelected -> "One framing, fitted to every screen"
+        selection.size == 1 -> statusText()
+        else -> "Editing in ${placement.disp.label} · ${placement.orient.label} shape, fitted to the others"
+    }
+
+    /** What to store: the edited framing on every selected screen (re-shaped where needed). */
+    fun cropsToSave(): Map<String, Crop> {
+        val mine = work[pk] ?: return work.toMap()
+        if (allSelected) return mapOf(pk to mine)
+        val out = LinkedHashMap<String, Crop>(work)
+        for (q in selection) {
+            out[q.key] = if (q.disp == placement.disp && q.orient == placement.orient) {
+                mine
+            } else {
+                CropMath.adapt(mine, img.w.toFloat(), img.h.toFloat(), aspectFor(q))
+            }
+        }
+        return out
     }
 
     /** Something was edited since opening (or the last save). */
@@ -420,7 +456,7 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     /** Drop this screen's own framing so it follows the others again. */
     fun reset() {
         dirty = true
-        if (allMode) {
+        if (allSelected) {
             work.clear()
             labels.clear()
             fills.clear()
@@ -428,12 +464,14 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
             fillDims.clear()
             fillSofts.clear()
         } else {
-            work.remove(pk)
-            labels.remove(pk)
-            fills.remove(pk)
-            fillBlurs.remove(pk)
-            fillDims.remove(pk)
-            fillSofts.remove(pk)
+            for (q in selection) {
+                work.remove(q.key)
+                labels.remove(q.key)
+                fills.remove(q.key)
+                fillBlurs.remove(q.key)
+                fillDims.remove(q.key)
+                fillSofts.remove(q.key)
+            }
         }
         freeFrame = null
         init()
@@ -526,8 +564,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
 
     fun store() {
         model.commit()
-        val mine = model.work[model.pk]
-        val crops: Map<String, Crop> = if (model.allMode && mine != null) mapOf(model.pk to mine) else model.work.toMap()
+        val crops: Map<String, Crop> = model.cropsToSave()
         Library.setCrops(albumId, imageId, crops)
         model.dirty = false
         // make the live wallpaper reload right away
@@ -728,7 +765,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
     }
 }
 
-/** "Edit for: All screens ▾" — pick one framing for everything, or a single screen. */
+/** "Edit for: …" button; opens a checklist of the 8 screens. */
 @Composable
 private fun EditForBar(model: CropModel) {
     var open by remember { mutableStateOf(false) }
@@ -740,62 +777,12 @@ private fun EditForBar(model: CropModel) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(end = 10.dp),
             )
-            Box {
-                FilledTonalButton(
-                    onClick = { open = true },
-                    contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-                ) {
-                    Text(model.scopeLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
-                }
-                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                    DropdownMenuItem(
-                        text = {
-                            Column {
-                                Text("All screens")
-                                Text(
-                                    "One framing, fitted to each screen",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
-                        onClick = {
-                            open = false
-                            model.editAll()
-                        },
-                        trailingIcon = { if (model.allMode) Icon(Icons.Filled.Check, contentDescription = null) },
-                    )
-                    for (scr in listOf(Screen.HOME, Screen.LOCK)) {
-                        HorizontalDivider()
-                        Text(
-                            if (scr == Screen.HOME) "Home screen only" else "Lock screen only",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(start = 16.dp, top = 10.dp, bottom = 2.dp),
-                        )
-                        Placement.ALL.filter { it.screen == scr }.forEach { p ->
-                            DropdownMenuItem(
-                                text = { Text("${p.disp.label} · ${p.orient.label}") },
-                                onClick = {
-                                    open = false
-                                    model.editOnly(p)
-                                },
-                                trailingIcon = {
-                                    when {
-                                        !model.allMode && model.placement == p -> Icon(Icons.Filled.Check, contentDescription = null)
-                                        model.isCustom(p) -> Text(
-                                            "Custom",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.primary,
-                                        )
-                                        else -> Unit
-                                    }
-                                },
-                            )
-                        }
-                    }
-                }
+            FilledTonalButton(
+                onClick = { open = true },
+                contentPadding = PaddingValues(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
+            ) {
+                Text(model.selectionLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
             }
         }
         Text(
@@ -807,6 +794,110 @@ private fun EditForBar(model: CropModel) {
             modifier = Modifier.padding(top = 2.dp),
         )
     }
+    if (open) ScreenPicker(model) { open = false }
+}
+
+private val SHAPES = listOf(
+    Disp.COVER to Orient.PORTRAIT,
+    Disp.COVER to Orient.LANDSCAPE,
+    Disp.MAIN to Orient.PORTRAIT,
+    Disp.MAIN to Orient.LANDSCAPE,
+)
+
+/** Checklist: rows are screen shapes, columns Home / Lock. Tap a row name to tick both. */
+@Composable
+private fun ScreenPicker(model: CropModel, onClose: () -> Unit) {
+    var sel by remember { mutableStateOf(model.selection) }
+    val all = Placement.ALL.toSet()
+    fun toggle(p: Placement) {
+        sel = if (p in sel) sel - p else sel + p
+    }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Edit which screens?") },
+        text = {
+            Column {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { sel = if (sel == all) setOf(model.placement) else all },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = sel == all, onCheckedChange = { sel = if (it) all else setOf(model.placement) })
+                    Text("All screens", style = MaterialTheme.typography.bodyLarge)
+                }
+                HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Spacer(Modifier.weight(1f))
+                    for (scr in listOf(Screen.HOME, Screen.LOCK)) {
+                        Text(
+                            if (scr == Screen.HOME) "Home" else "Lock",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .width(56.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    val col = all.filter { it.screen == scr }.toSet()
+                                    sel = if (sel.containsAll(col)) sel - col else sel + col
+                                }
+                                .padding(vertical = 6.dp),
+                        )
+                    }
+                }
+                SHAPES.forEach { (d, o) ->
+                    val home = Placement(Screen.HOME, d, o)
+                    val lock = Placement(Screen.LOCK, d, o)
+                    val custom = listOfNotNull(
+                        if (model.isCustom(home)) "home" else null,
+                        if (model.isCustom(lock)) "lock" else null,
+                    )
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(
+                            Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    val both = setOf(home, lock)
+                                    sel = if (sel.containsAll(both)) sel - both else sel + both
+                                }
+                                .padding(vertical = 6.dp, horizontal = 4.dp),
+                        ) {
+                            Text("${d.label} · ${o.label}", style = MaterialTheme.typography.bodyLarge)
+                            if (custom.isNotEmpty()) {
+                                Text(
+                                    "Custom on " + custom.joinToString(" & "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                        }
+                        Box(Modifier.width(56.dp), contentAlignment = Alignment.Center) {
+                            Checkbox(checked = home in sel, onCheckedChange = { toggle(home) })
+                        }
+                        Box(Modifier.width(56.dp), contentAlignment = Alignment.Center) {
+                            Checkbox(checked = lock in sel, onCheckedChange = { toggle(lock) })
+                        }
+                    }
+                }
+                Text(
+                    "Tap a row name to tick home and lock together.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = sel.isNotEmpty(), onClick = {
+                model.select(sel)
+                onClose()
+            }) { Text("Done") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+    )
 }
 
 /** "Set wallpaper" sets home & lock in one tap; the ▾ part offers one screen only. */
