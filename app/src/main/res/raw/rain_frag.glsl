@@ -24,6 +24,7 @@ uniform vec4 uFxB;
 uniform float uMix;        // 0 = layer A, 1 = layer B
 
 uniform vec2 uRes;         // surface size, px
+uniform vec3 uFallPh;      // falling-rain scroll per depth layer (wrapped on the CPU, seamless)
 uniform float uTime;       // seconds (already multiplied by speed)
 uniform float uRain;       // sliding drops 0..1
 uniform float uDrops;      // droplets on the glass 0..1
@@ -80,15 +81,18 @@ Drop makeDrop(vec2 off, float d, float r, float scale) {
     Drop dr;
     float len = max(length(off), 1e-5);
     dr.e = off / len * d;
-    float aa = clamp(1.5 / max(r / scale * uRes.y, 1.0), 0.03, 0.5);
-    dr.m = 1.0 - smoothstep(1.0 - aa, 1.0, d);
+    float rpx = r / scale * uRes.y;
+    float aa = clamp(1.5 / max(rpx, 1.0), 0.03, 0.5);
+    // the tiniest droplets fade out as they shrink below ~1.5 px, so they never flicker or pop
+    dr.m = (1.0 - smoothstep(1.0 - aa, 1.0, d)) * smoothstep(0.45, 1.5, rpx);
     dr.r = r / scale;
     return dr;
 }
 
-// Droplets sitting on the glass. Each grid is rotated so no rows show, and every droplet
-// lands somewhere new each time it dries up and comes back.
-Drop droplets(vec2 b, float S, float ang, float t, float density, float seed) {
+// Droplets sitting on the glass. Each grid is rotated so no rows show. A droplet lands, slowly
+// evaporates (shrinking the whole time), and dries up; heavier ones creep down a little first.
+// Nothing stays put for long: every droplet is gone within roughly 7–35 seconds.
+Drop droplets(vec2 b, float S, float ang, float t, float density, float seed, float creep) {
     float ca = cos(ang);
     float sa = sin(ang);
     vec2 q = vec2(ca * b.x - sa * b.y, sa * b.x + ca * b.y) * S;
@@ -96,24 +100,38 @@ Drop droplets(vec2 b, float S, float ang, float t, float density, float seed) {
     vec2 f = fract(q) - 0.5;
     float n = h21(id + seed * 1.7 + 3.1);
     if (n > density) return noDrop();
-    float rate = 0.008 + 0.025 * h21(id + seed + 5.3);
+    float rate = 0.028 + 0.07 * h21(id + seed + 5.3);
     float p = t * rate + n * 7.0;
     float k = floor(p);
     float life = p - k;
     vec2 h = h22(id + seed + k * 3.17);
-    vec2 c = (h - 0.5) * 0.26;
+    vec2 h3 = h22(id + seed + k * 5.91 + 2.0);
     float age = life / rate;                                   // seconds since it landed
     float pop = smoothstep(0.0, 0.12, age);
     float wob = 1.0 + 0.15 * exp(-age * 14.0) * sin(age * 55.0);
-    float fade = 1.0 - smoothstep(0.85, 1.0, life);
-    if (fade < 0.02) return noDrop();
-    float r = (0.06 + 0.13 * h.x * h.x) * (0.4 + 0.6 * pop) * wob * sqrt(fade);
+    float fade = 1.0 - smoothstep(0.5, 1.0, life);              // dries up gently over the second half
+    if (fade < 0.01) return noDrop();
+    float evap = mix(1.0, 0.65, smoothstep(0.1, 1.0, life));    // keeps shrinking as it evaporates
+    float size0 = 0.07 + 0.145 * h.x * h.x;
+    float r = size0 * (0.4 + 0.6 * pop) * wob * evap * mix(0.45, 1.0, fade);
+
+    // creeping droplets: start a bit higher and slide slowly down (eased), in screen-down direction
+    float moves = step(1.0 - creep * 0.45, h3.x) * step(size0, 0.14);
+    float dist = moves * mix(0.12, 0.24, h3.y);
+    float slide = smoothstep(0.2, 0.95, life);
+    slide = slide * slide * (3.0 - 2.0 * slide);
+    vec2 down = vec2(-sa, ca);                                  // screen-down, in this grid's rotated space
+    vec2 c = (h - 0.5) * mix(0.22, 0.12, moves) + down * dist * (slide - 0.5);
+
     vec2 off = f - c;
     vec2 offW = vec2(ca * off.x + sa * off.y, -sa * off.x + ca * off.y);   // gravity still points down
     vec2 eOff;
     float d = blob2(offW, r, h22(id + seed + 11.0 + k), eOff);
     if (d > 1.2) return noDrop();
-    return makeDrop(eOff, d, r, S);
+    Drop dr = makeDrop(eOff, d, r, S);
+    // ease in on landing and melt away at the end, so nothing blinks in or out
+    dr.m *= smoothstep(0.0, 0.05, age) * smoothstep(0.0, 0.35, fade);
+    return dr;
 }
 
 // Raindrops hitting the glass: a drop lands at a random spot, pops in with a wobble,
@@ -136,8 +154,9 @@ Drop impacts(vec2 b, float S, float t, float amount, float seed, out vec3 ring) 
     float r0 = mix(0.09, 0.15, h2.x);
     float pop = smoothstep(0.0, 0.07, age);
     float wob = 1.0 + 0.22 * exp(-age * 12.0) * sin(age * 70.0);
-    float fade = 1.0 - smoothstep(0.7, 1.0, life);
-    float r = r0 * (0.35 + 0.65 * pop) * wob * sqrt(fade);
+    float fade = 1.0 - smoothstep(0.55, 1.0, life);
+    float evap = mix(1.0, 0.55, smoothstep(0.15, 1.0, life));
+    float r = r0 * (0.35 + 0.65 * pop) * wob * evap * mix(0.3, 1.0, fade);
     vec2 off = f - c;
 
     if (age < 0.35) {
@@ -153,7 +172,10 @@ Drop impacts(vec2 b, float S, float t, float amount, float seed, out vec3 ring) 
     if (fade > 0.02) {
         vec2 eOff;
         float d = blob2(off, r, h2, eOff);
-        if (d < 1.2) best = makeDrop(eOff, d, r, S);
+        if (d < 1.2) {
+            best = makeDrop(eOff, d, r, S);
+            best.m *= smoothstep(0.0, 0.35, fade);
+        }
     }
     float fly = smoothstep(0.0, 0.05, age);
     for (int i = 0; i < 5; i++) {
@@ -163,7 +185,8 @@ Drop impacts(vec2 b, float S, float t, float amount, float seed, out vec3 ring) 
         float a = hs.x * TAU;
         float dist = r0 * mix(1.5, 2.5, hs.y) * fly;
         vec2 sc = c + vec2(cos(a), sin(a)) * dist;
-        float sr = r0 * mix(0.14, 0.28, fract(hs.x * 7.0 + hs.y)) * sqrt(fade) * fly;
+        float sr = r0 * mix(0.14, 0.28, fract(hs.x * 7.0 + hs.y)) * fly
+            * (1.0 - smoothstep(0.1, 0.6, life + hs.y * 0.15));      // spray beads dry up first
         if (sr < 0.003) continue;
         vec2 so = f - sc;
         float sd = blob(so, sr, hs);
@@ -185,11 +208,12 @@ float fallingRain(vec2 b, float t, float amount) {
         p.x += p.y * 0.14;
         float cols = mix(14.0, 34.0, depth);
         float rows = mix(1.4, 2.6, depth);
-        float v = mix(2.4, 1.5, depth);
         float col = floor(p.x * cols);
-        vec2 q = vec2(p.x * cols, p.y * rows - t * v * rows + h11(col + fi * 31.0) * 10.0);
+        float ph = i == 0 ? uFallPh.x : (i == 1 ? uFallPh.y : uFallPh.z);
+        vec2 q = vec2(p.x * cols, p.y * rows - ph + h11(col + fi * 31.0) * 10.0);
         vec2 id = floor(q);
         vec2 f = fract(q);
+        id.y = mod(id.y, 4096.0);                // matches the CPU wrap, so it's seamless
         float h = h21(id + fi * 7.3);
         if (h > amount) continue;
         vec2 hh = h22(id + fi * 3.1);
@@ -357,9 +381,9 @@ void main() {
         float wipe = 1.0 - smoothstep(0.02, 0.2, trail);
         Drop prev = best;
         best = noDrop();
-        Drop s1 = droplets(b, 36.0 / size, 0.37, t, uDrops * 0.75, 1.0);
-        Drop s2 = droplets(b + vec2(0.013, 0.021), 58.0 / size, -0.61, t * 1.2, uDrops, 17.0);
-        Drop s3 = droplets(b + vec2(0.037, 0.005), 90.0 / size, 1.13, t * 1.4, uDrops, 29.0);
+        Drop s1 = droplets(b, 36.0 / size, 0.37, t, uDrops * 0.75, 1.0, 1.0);
+        Drop s2 = droplets(b + vec2(0.013, 0.021), 58.0 / size, -0.61, t * 1.2, uDrops, 17.0, 0.6);
+        Drop s3 = droplets(b + vec2(0.037, 0.005), 90.0 / size, 1.13, t * 1.4, uDrops, 29.0, 0.0);
         s1.m *= wipe;
         s2.m *= wipe;
         s3.m *= wipe;

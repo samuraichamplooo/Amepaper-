@@ -127,7 +127,7 @@ object K {
     val SPEED = FloatKey("speed", 1f)
     val IMPACTS = FloatKey("impacts", 0.45f)
     val FALLING = FloatKey("falling", 0.25f)
-    val FPS = IntKey("fps", 30)
+    val FPS = IntKey("fps", 60)
     val SAVER = BoolKey("battery_saver", true)
 
     // --- weather sync ---

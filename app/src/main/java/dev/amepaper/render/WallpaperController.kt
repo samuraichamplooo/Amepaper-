@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.os.Handler
 import android.os.Looper
+import android.view.Choreographer
 import android.os.PowerManager
 import android.util.Log
 import dev.amepaper.data.Changer
@@ -61,16 +62,34 @@ class WallpaperController(
     private val prepared = HashMap<Screen, Prepared>()
     private val loading = HashMap<Screen, String>()
 
-    private val frame = object : Runnable {
-        override fun run() {
+    private var lastFrameNs = 0L
+    private var fpsCached = 30
+    private var fpsCheckedAt = 0L
+
+    /**
+     * Frames are paced by the display's vsync (Choreographer), skipping whole vsyncs to hit the
+     * chosen frame rate. Evenly spaced frames with exact timestamps make the motion smooth.
+     */
+    private val frame = object : Choreographer.FrameCallback {
+        override fun doFrame(frameTimeNanos: Long) {
             if (released || !visible) {
                 looping = false
                 return
             }
             val anim = renderer.params.animated || renderer.fading || System.currentTimeMillis() < fadeUntil
-            requestRender()
+            if (frameTimeNanos - fpsCheckedAt > 2_000_000_000L) {
+                fpsCached = targetFps()
+                fpsCheckedAt = frameTimeNanos
+            }
+            val interval = 1_000_000_000L / fpsCached
+            // a little slack so e.g. 60 fps lands exactly on every other vsync of a 120 Hz screen
+            if (frameTimeNanos - lastFrameNs >= interval - 2_000_000L || !anim) {
+                lastFrameNs = frameTimeNanos
+                renderer.frameNanos = frameTimeNanos
+                requestRender()
+            }
             if (anim) {
-                main.postDelayed(this, frameDelay())
+                Choreographer.getInstance().postFrameCallback(this)
             } else {
                 looping = false
             }
@@ -157,7 +176,7 @@ class WallpaperController(
         released = true
         sp.unregisterOnSharedPreferenceChangeListener(this)
         scope.cancel()
-        main.removeCallbacks(frame)
+        Choreographer.getInstance().removeFrameCallback(frame)
         main.removeCallbacks(tickRunnable)
         io.shutdownNow()
     }
@@ -339,16 +358,16 @@ class WallpaperController(
     private fun kick() {
         if (released || !visible || looping) return
         looping = true
-        main.post(frame)
+        main.post { Choreographer.getInstance().postFrameCallback(frame) }
     }
 
-    private fun frameDelay(): Long {
+    private fun targetFps(): Int {
         var fps = sp.get(K.FPS).coerceIn(10, 120)
         if (sp.get(K.SAVER)) {
             val pm = app.getSystemService(Context.POWER_SERVICE) as? PowerManager
             if (pm?.isPowerSaveMode == true) fps = minOf(fps, 15)
         }
-        return 1000L / fps
+        return fps
     }
 
     companion object {

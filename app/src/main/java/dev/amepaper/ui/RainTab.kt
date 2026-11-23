@@ -146,11 +146,11 @@ fun RainTab() {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 14.dp)) {
                 Text("Frame rate", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Higher is smoother, lower saves battery.",
+                    "Higher is smoother, lower saves battery. 120 matches your screen's fastest refresh.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                val options = listOf(24, 30, 45, 60)
+                val options = listOf(30, 60, 120)
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(top = 12.dp)) {
                     options.forEachIndexed { i, f ->
                         SegmentedButton(

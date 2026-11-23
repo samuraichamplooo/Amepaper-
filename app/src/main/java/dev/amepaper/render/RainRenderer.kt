@@ -14,6 +14,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -54,6 +55,13 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
     var fading = false
         private set
 
+    /**
+     * The display's vsync time for the frame being drawn (set by the frame loop). Animating from
+     * vsync times instead of "now" keeps motion evenly spaced, so fast rain doesn't judder.
+     */
+    @Volatile
+    var frameNanos = 0L
+
     /** Called on the GL thread when the surface size changes. */
     var onSize: ((Int, Int) -> Unit)? = null
 
@@ -66,7 +74,7 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
     private var blank = 0
     private var w = 1
     private var h = 1
-    private var time = 0f
+    private var time = 0.0
     private var lastNanos = 0L
     private val loc = HashMap<String, Int>()
 
@@ -142,12 +150,22 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        val now = System.nanoTime()
-        val dt = if (lastNanos == 0L) 0f else ((now - lastNanos) / 1e9f).coerceIn(0f, 0.1f)
-        lastNanos = now
+        val fn = frameNanos
+        val now = if (fn != 0L && abs(System.nanoTime() - fn) < 250_000_000L) fn else System.nanoTime()
         val p = params
-        time += dt * p.speed
-        if (time > 20000f) time -= 20000f
+        val gap = if (lastNanos == 0L) 0L else now - lastNanos
+        val dt: Float
+        if (gap > 1_500_000_000L) {
+            // back after being hidden: the rain carried on meanwhile, so show where it would be now
+            // (and keep the clock small, which keeps the motion precise)
+            time = (time + min(gap / 1e9, 900.0) * p.speed) % 3600.0
+            dt = 0.1f
+        } else {
+            dt = (max(gap, 0L) / 1e9f).coerceAtMost(0.1f)
+            time += dt * p.speed
+            if (time > 20000.0) time -= 20000.0
+        }
+        lastNanos = now
 
         val target = cur.toFloat()
         if (mix != target) {
@@ -188,7 +206,15 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
 
         GLES30.glUniform1f(u("uMix"), mix)
         GLES30.glUniform2f(u("uRes"), w.toFloat(), h.toFloat())
-        GLES30.glUniform1f(u("uTime"), time)
+        GLES30.glUniform1f(u("uTime"), time.toFloat())
+        // falling rain scrolls fast, so its offsets are worked out here in double precision and
+        // wrapped at a period the shader's hashing repeats on (no stutter, no visible jump)
+        GLES30.glUniform3f(
+            u("uFallPh"),
+            ((time * 2.4 * 1.4) % 4096.0).toFloat(),
+            ((time * 1.95 * 2.0) % 4096.0).toFloat(),
+            ((time * 1.5 * 2.6) % 4096.0).toFloat(),
+        )
         GLES30.glUniform1f(u("uRain"), p.rain)
         GLES30.glUniform1f(u("uDrops"), p.drops)
         GLES30.glUniform1f(u("uSize"), p.size)
@@ -332,7 +358,7 @@ class RainRenderer(ctx: Context) : GLSurfaceView.Renderer {
         private val UNIFORMS = listOf(
             "uTexA", "uMidA", "uFogA", "uRectA", "uCoverA", "uFxA",
             "uTexB", "uMidB", "uFogB", "uRectB", "uCoverB", "uFxB",
-            "uMix", "uRes", "uTime", "uRain", "uDrops", "uSize", "uFog", "uRefr", "uTrail", "uImpact", "uFall",
+            "uMix", "uRes", "uTime", "uRain", "uDrops", "uSize", "uFog", "uRefr", "uTrail", "uImpact", "uFall", "uFallPh",
         )
     }
 }
