@@ -28,6 +28,7 @@ import java.util.UUID
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.random.Random
 
 /**
  * Generative fill for the empty space around a zoomed-out picture.
@@ -180,6 +181,11 @@ object AiFill {
             "lighting, colors, perspective, depth of field and style, as if it had been captured wider. " +
             "Keep the existing picture exactly as it is. No black bars, borders, frames, text, logos or watermarks."
 
+    /** Shorter wording used when retrying after the safety filter flags a result. */
+    private const val PROMPT_PLAIN =
+        "Extend this picture outward to fill the black areas around it with more of the same scenery. " +
+            "Keep the picture itself unchanged. Seamless and natural, no borders or text."
+
     // ---------------------------------------------------------------- FLUX.2 [klein] on Cloudflare Workers AI
 
     val FLUX_MODELS = listOf(
@@ -193,6 +199,12 @@ object AiFill {
         val account = sp.get(K.CF_ACCOUNT).trim()
         val token = sp.get(K.CF_TOKEN).trim()
         if (account.isEmpty() || token.isEmpty()) throw IOException("Add your Cloudflare account ID and token first")
+        if (!Regex("^[0-9a-fA-F]{32}$").matches(account)) {
+            throw IOException(
+                "That Account ID doesn't look right. It's a 32-character code of letters and numbers, not your account " +
+                    "name. In the Cloudflare dashboard: Workers & Pages → Account details → copy Account ID.",
+            )
+        }
         val model = sp.get(K.CF_MODEL).ifBlank { K.CF_MODEL.def }
 
         // input images must be under 512×512; the output can be much larger
@@ -206,42 +218,58 @@ object AiFill {
             Pair(snap16(1280 * aspect), 1280)
         }
 
-        val boundary = "----amepaper" + UUID.randomUUID().toString().replace("-", "")
-        val body = ByteArrayOutputStream()
-        fun field(name: String, value: String) {
-            body.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray())
-        }
-        field("prompt", PROMPT)
-        field("width", ow.toString())
-        field("height", oh.toString())
-        body.write(
-            ("--$boundary\r\nContent-Disposition: form-data; name=\"input_image_0\"; filename=\"frame.png\"\r\n" +
-                "Content-Type: image/png\r\n\r\n").toByteArray(),
-        )
-        body.write(png)
-        body.write("\r\n--$boundary--\r\n".toByteArray())
-
         val url = "https://api.cloudflare.com/client/v4/accounts/$account/ai/run/$model"
-        val resp = post(
-            url,
-            mapOf("Authorization" to "Bearer $token", "Content-Type" to "multipart/form-data; boundary=$boundary"),
-            body.toByteArray(),
-        )
-        val decoded: Bitmap? = if (resp.contentType.startsWith("image/")) {
-            BitmapFactory.decodeByteArray(resp.bytes, 0, resp.bytes.size)
-        } else {
-            val text = String(resp.bytes)
-            val json = runCatching { JSONObject(text) }.getOrNull()
-            if (resp.code !in 200..299 || json == null || json.optBoolean("success", true) == false) {
-                throw IOException(fluxError(resp.code, json, text))
+        // FLUX's safety filter checks every generated picture and sometimes flags harmless ones.
+        // It's random per picture, so a new seed (and a plainer prompt) almost always gets through.
+        val prompts = listOf(PROMPT, PROMPT_PLAIN, PROMPT_PLAIN)
+        var lastError = ""
+        for (attempt in prompts.indices) {
+            val boundary = "----amepaper" + UUID.randomUUID().toString().replace("-", "")
+            val body = ByteArrayOutputStream()
+            fun field(name: String, value: String) {
+                body.write("--$boundary\r\nContent-Disposition: form-data; name=\"$name\"\r\n\r\n$value\r\n".toByteArray())
             }
-            val b64 = json.optJSONObject("result")?.optString("image")?.takeIf { it.isNotEmpty() }
-                ?: json.optString("image").takeIf { it.isNotEmpty() }
-                ?: throw IOException("Cloudflare didn't send back a picture")
-            decodeB64(b64)
+            field("prompt", prompts[attempt])
+            field("width", ow.toString())
+            field("height", oh.toString())
+            field("seed", (1 + Random.nextInt(1_000_000_000)).toString())
+            body.write(
+                ("--$boundary\r\nContent-Disposition: form-data; name=\"input_image_0\"; filename=\"frame.png\"\r\n" +
+                    "Content-Type: image/png\r\n\r\n").toByteArray(),
+            )
+            body.write(png)
+            body.write("\r\n--$boundary--\r\n".toByteArray())
+
+            val resp = post(
+                url,
+                mapOf("Authorization" to "Bearer $token", "Content-Type" to "multipart/form-data; boundary=$boundary"),
+                body.toByteArray(),
+            )
+            val decoded: Bitmap? = if (resp.contentType.startsWith("image/")) {
+                BitmapFactory.decodeByteArray(resp.bytes, 0, resp.bytes.size)
+            } else {
+                val text = String(resp.bytes)
+                val json = runCatching { JSONObject(text) }.getOrNull()
+                if (resp.code !in 200..299 || json == null || json.optBoolean("success", true) == false) {
+                    val msg = fluxError(resp.code, json, text)
+                    if (msg.contains("flagged", true)) {
+                        lastError = msg
+                        continue
+                    }
+                    throw IOException(msg)
+                }
+                val b64 = json.optJSONObject("result")?.optString("image")?.takeIf { it.isNotEmpty() }
+                    ?: json.optString("image").takeIf { it.isNotEmpty() }
+                    ?: throw IOException("Cloudflare didn't send back a picture")
+                decodeB64(b64)
+            }
+            val bmp = decoded ?: throw IOException("Couldn't read the picture Cloudflare sent back")
+            return@withContext save(bmp, c)
         }
-        val bmp = decoded ?: throw IOException("Couldn't read the picture Cloudflare sent back")
-        save(bmp, c)
+        throw IOException(
+            "FLUX's safety filter blocked the result ${prompts.size} times in a row. On a picture like this it's a false " +
+                "alarm. Tap FLUX again, switch to Klein 9B in Settings → AI fill, or use On-device or Gemini. ($lastError)",
+        )
     }
 
     private fun fluxError(code: Int, json: JSONObject?, text: String): String {
