@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
 import android.graphics.Matrix
 import android.graphics.Paint
@@ -15,6 +17,7 @@ import android.graphics.Shader
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
 /**
  * Fills the empty space around a zoomed-out picture. Used for the wallpaper itself, the
@@ -26,7 +29,7 @@ import kotlin.math.roundToInt
  */
 object FillRenderer {
 
-    val MODES = listOf("extend", "mirror", "blur", "color", "black")
+    val MODES = listOf("mirror", "extend", "blur", "color", "black")
 
     fun label(mode: String): String = when (mode) {
         "extend" -> "Extend"
@@ -125,37 +128,126 @@ object FillRenderer {
 
     /**
      * Draws the whole fill (blurred if needed, then darkened) into [frame] on [c].
-     * Blurring happens on a small copy, so it stays fast at any size.
+     * Work happens on a small copy, so it stays fast at any size. Extend and Mirror blur
+     * progressively: lightly next to the picture, more the farther away, so the fill flows out of
+     * the picture's edges. Blur gives a zoomed, softly blurred "ambient" backdrop.
      */
     fun renderFill(c: Canvas, frame: RectF, src: Bitmap?, srcRect: Rect?, pic: RectF, mode: String, blur: Float, dim: Float) {
         val black = Paint().apply { color = Color.BLACK }
         c.drawRect(frame, black)
         if (src == null || mode == "black") return
-        if (!usesBlur(mode) || blur < 0.01f) {
+        if (mode == "color" || (mode != "blur" && blur < 0.01f)) {
             drawFillBase(c, frame, src, srcRect, pic, mode)
         } else {
-            val d = 4f
+            val d = 3f
             val sw = max(8, (frame.width() / d).roundToInt())
             val sh = max(8, (frame.height() / d).roundToInt())
             val small = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
             val sc = Canvas(small)
             val sr = srcRect ?: Rect(0, 0, src.width, src.height)
+            val part = Bitmap.createBitmap(src, sr.left, sr.top, max(1, sr.width()), max(1, sr.height()))
             val tw = max(2, (pic.width() / d).roundToInt())
             val th = max(2, (pic.height() / d).roundToInt())
-            val part = Bitmap.createBitmap(src, sr.left, sr.top, max(1, sr.width()), max(1, sr.height()))
             val smallSrc = Bitmap.createScaledBitmap(part, min(tw, part.width), min(th, part.height), true)
             val smallPic = RectF(
                 (pic.left - frame.left) / d, (pic.top - frame.top) / d,
                 (pic.right - frame.left) / d, (pic.bottom - frame.top) / d,
             )
-            drawFillBase(sc, RectF(0f, 0f, sw.toFloat(), sh.toFloat()), smallSrc, null, smallPic, mode)
-            val r = blurRadius(blur, min(sw, sh).toFloat()).roundToInt().coerceAtLeast(1)
-            val blurred = Blur.box(small, r, 3)
-            c.drawBitmap(blurred, null, frame, Paint(Paint.FILTER_BITMAP_FLAG))
+            if (mode == "blur") {
+                // the picture blown up to cover the frame (a touch extra so edges stay rich)
+                val z = 0.06f
+                drawFillBase(sc, RectF(-sw * z, -sh * z, sw * (1 + z), sh * (1 + z)), smallSrc, null, smallPic, "blur")
+            } else {
+                drawFillBase(sc, RectF(0f, 0f, sw.toFloat(), sh.toFloat()), smallSrc, null, smallPic, mode)
+            }
+            val short = min(sw, sh).toFloat()
+            val far = max(1, blurRadius(max(blur, 0.02f), short).roundToInt())
+            val result = when {
+                blur < 0.01f -> small
+                mode == "blur" -> Blur.box(small, far, 3)
+                else -> {
+                    // Extend needs more blur near the picture to hide stretched-pixel streaks
+                    val near = max(1, (far * if (mode == "extend") 0.75f else 0.5f).roundToInt())
+                    progressive(Blur.box(small, near, 3), Blur.box(small, far, 3), smallPic, 0.3f * short)
+                }
+            }
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+            paint.colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.18f) })
+            c.drawBitmap(result, null, frame, paint)
         }
         if (dim > 0.01f) {
             c.drawRect(frame, Paint().apply { color = Color.argb((dim.coerceIn(0f, 1f) * 255).roundToInt(), 0, 0, 0) })
         }
+    }
+
+    /** Mixes [near] into [far] by distance from [pic]: closer to the picture stays sharper. */
+    private fun progressive(near: Bitmap, far: Bitmap, pic: RectF, falloff: Float): Bitmap {
+        val w = near.width
+        val h = near.height
+        val a = IntArray(w * h)
+        val b = IntArray(w * h)
+        near.getPixels(a, 0, w, 0, 0, w, h)
+        far.getPixels(b, 0, w, 0, 0, w, h)
+        val inv = 1f / max(1f, falloff)
+        for (y in 0 until h) {
+            val fy = y + 0.5f
+            val dy = max(max(pic.top - fy, fy - pic.bottom), 0f)
+            val row = y * w
+            for (x in 0 until w) {
+                val fx = x + 0.5f
+                val dx = max(max(pic.left - fx, fx - pic.right), 0f)
+                var t = sqrt(dx * dx + dy * dy) * inv
+                if (t > 1f) t = 1f
+                t = t * t * (3f - 2f * t)
+                val p = a[row + x]
+                val q = b[row + x]
+                val r = ((p shr 16 and 0xff) + ((q shr 16 and 0xff) - (p shr 16 and 0xff)) * t).toInt()
+                val g = ((p shr 8 and 0xff) + ((q shr 8 and 0xff) - (p shr 8 and 0xff)) * t).toInt()
+                val bl = ((p and 0xff) + ((q and 0xff) - (p and 0xff)) * t).toInt()
+                a[row + x] = (0xff shl 24) or (r shl 16) or (g shl 8) or bl
+            }
+        }
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(a, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /**
+     * The fill alone for the editor preview: [frame] and [pic] in editor pixels, [src] the
+     * editor's copy of the picture with [srcRect] the part inside the frame. Rendered small.
+     */
+    fun preview(src: Bitmap, srcRect: Rect, frame: RectF, pic: RectF, mode: String, blur: Float, dim: Float): Bitmap {
+        val k = min(1f, 720f / max(1f, max(frame.width(), frame.height())))
+        val ow = max(8, (frame.width() * k).roundToInt())
+        val oh = max(8, (frame.height() * k).roundToInt())
+        val out = Bitmap.createBitmap(ow, oh, Bitmap.Config.ARGB_8888)
+        val p = RectF(
+            (pic.left - frame.left) * k, (pic.top - frame.top) * k,
+            (pic.right - frame.left) * k, (pic.bottom - frame.top) * k,
+        )
+        renderFill(Canvas(out), RectF(0f, 0f, ow.toFloat(), oh.toFloat()), src, srcRect, p, mode, blur, dim)
+        return out
+    }
+
+    /** A little film grain over the fill so smooth dark gradients don't show bands. */
+    fun grain(bmp: Bitmap, amount: Int = 3) {
+        if (!bmp.isMutable) return
+        val w = bmp.width
+        val h = bmp.height
+        val px = IntArray(w * h)
+        bmp.getPixels(px, 0, w, 0, 0, w, h)
+        var seed = 0x2545F491
+        val span = 2 * amount + 1
+        for (i in px.indices) {
+            seed = seed * 1664525 + 1013904223
+            val n = ((seed ushr 16) and 0x7fff) % span - amount
+            val p = px[i]
+            val r = ((p shr 16 and 0xff) + n).coerceIn(0, 255)
+            val g = ((p shr 8 and 0xff) + n).coerceIn(0, 255)
+            val b = ((p and 0xff) + n).coerceIn(0, 255)
+            px[i] = (0xff shl 24) or (r shl 16) or (g shl 8) or b
+        }
+        bmp.setPixels(px, 0, w, 0, 0, w, h)
     }
 
     /**
@@ -168,29 +260,22 @@ object FillRenderer {
             c.drawBitmap(src, srcRect, pic, paint)
             return
         }
-        val f = max(1f, soft.coerceIn(0f, 1f) * 0.15f * min(pic.width(), pic.height()))
+        val f = max(1f, soft.coerceIn(0f, 1f) * 0.24f * min(pic.width(), pic.height()))
         val layer = c.saveLayer(pic, null)
         c.drawBitmap(src, srcRect, pic, paint)
         val mask = Paint(Paint.ANTI_ALIAS_FLAG)
         mask.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-        val clear = 0x00000000
-        val solid = 0xFF000000.toInt()
-        if (pic.left > frame.left + 0.5f) {
-            mask.shader = LinearGradient(pic.left, 0f, pic.left + f, 0f, clear, solid, Shader.TileMode.CLAMP)
+        // smoothstep-shaped fade (no visible start or end of the ramp)
+        val colors = intArrayOf(0x00000000, 0x28000000, 0x80000000.toInt(), 0xD7000000.toInt(), 0xFF000000.toInt())
+        val stops = floatArrayOf(0f, 0.25f, 0.5f, 0.75f, 1f)
+        fun fade(x0: Float, y0: Float, x1: Float, y1: Float) {
+            mask.shader = LinearGradient(x0, y0, x1, y1, colors, stops, Shader.TileMode.CLAMP)
             c.drawRect(pic, mask)
         }
-        if (pic.right < frame.right - 0.5f) {
-            mask.shader = LinearGradient(pic.right, 0f, pic.right - f, 0f, clear, solid, Shader.TileMode.CLAMP)
-            c.drawRect(pic, mask)
-        }
-        if (pic.top > frame.top + 0.5f) {
-            mask.shader = LinearGradient(0f, pic.top, 0f, pic.top + f, clear, solid, Shader.TileMode.CLAMP)
-            c.drawRect(pic, mask)
-        }
-        if (pic.bottom < frame.bottom - 0.5f) {
-            mask.shader = LinearGradient(0f, pic.bottom, 0f, pic.bottom - f, clear, solid, Shader.TileMode.CLAMP)
-            c.drawRect(pic, mask)
-        }
+        if (pic.left > frame.left + 0.5f) fade(pic.left, 0f, pic.left + f, 0f)
+        if (pic.right < frame.right - 0.5f) fade(pic.right, 0f, pic.right - f, 0f)
+        if (pic.top > frame.top + 0.5f) fade(0f, pic.top, 0f, pic.top + f)
+        if (pic.bottom < frame.bottom - 0.5f) fade(0f, pic.bottom, 0f, pic.bottom - f)
         c.restoreToCount(layer)
     }
 
@@ -218,6 +303,7 @@ object FillRenderer {
         val sr = Rect(x0.roundToInt(), y0.roundToInt(), max(x0.roundToInt() + 1, x1.roundToInt()), max(y0.roundToInt() + 1, y1.roundToInt()))
         val pic = RectF((sr.left - cl) * kx, (sr.top - ct) * ky, (sr.right - cl) * kx, (sr.bottom - ct) * ky)
         renderFill(c, frame, src, sr, pic, mode, blur, dim)
+        if (mode != "black") grain(out)
         drawPicture(c, src, sr, pic, frame, soft)
         return out
     }

@@ -3,6 +3,9 @@ package dev.amepaper.ui
 import android.content.SharedPreferences
 import android.graphics.Bitmap
 import android.widget.Toast
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.material3.Checkbox
 import androidx.compose.ui.text.style.TextAlign
 import dev.amepaper.data.Disp
@@ -249,10 +252,47 @@ private class CropModel(private val sp: SharedPreferences, private val img: Wall
     private val shown: Crop? get() = work[pk] ?: resolved().crop
 
     val label: String get() = labels[pk] ?: (work[pk]?.aspect ?: "screen")
-    val fill: String get() = fills[pk] ?: (shown?.fill ?: "extend")
-    val fillBlur: Float get() = fillBlurs[pk] ?: (shown?.fillBlur ?: 0.5f)
+    val fill: String get() = fills[pk] ?: (shown?.fill ?: "mirror")
+    val fillBlur: Float get() = fillBlurs[pk] ?: (shown?.fillBlur ?: 0.65f)
     val fillDim: Float get() = fillDims[pk] ?: (shown?.fillDim ?: 0.2f)
-    val fillSoft: Float get() = fillSofts[pk] ?: (shown?.fillSoft ?: 0.3f)
+    val fillSoft: Float get() = fillSofts[pk] ?: (shown?.fillSoft ?: 0.4f)
+
+    /** CPU-rendered fill for the preview (matches the real wallpaper exactly). */
+    var fillPreview by mutableStateOf<ImageBitmap?>(null)
+
+    /** The part of the picture inside the frame (editor pixels) and where it sits on screen. */
+    fun visible(fr: Rect): Pair<android.graphics.Rect, android.graphics.RectF> {
+        val p = picRect()
+        val sx0 = ((max(fr.left, p.left) - p.left) / scale).coerceIn(0f, bw - 1f)
+        val sy0 = ((max(fr.top, p.top) - p.top) / scale).coerceIn(0f, bh - 1f)
+        val sx1 = ((min(fr.right, p.right) - p.left) / scale).coerceIn(sx0 + 1f, bw)
+        val sy1 = ((min(fr.bottom, p.bottom) - p.top) / scale).coerceIn(sy0 + 1f, bh)
+        val src = android.graphics.Rect(sx0.roundToInt(), sy0.roundToInt(), sx1.roundToInt(), sy1.roundToInt())
+        val vis = android.graphics.RectF(
+            p.left + src.left * scale, p.top + src.top * scale,
+            p.left + src.right * scale, p.top + src.bottom * scale,
+        )
+        return Pair(src, vis)
+    }
+
+    data class FillSpec(
+        val frame: android.graphics.RectF,
+        val srcRect: android.graphics.Rect,
+        val visible: android.graphics.RectF,
+        val mode: String,
+        val blur: Float,
+        val dim: Float,
+        val src: Bitmap,
+    )
+
+    /** Everything the fill preview depends on, captured now (null when nothing to fill). */
+    fun fillSpec(): FillSpec? {
+        val a = abmp ?: return null
+        if (!ready || !hasEmptySpace()) return null
+        val fr = frame()
+        val (sr, vis) = visible(fr)
+        return FillSpec(android.graphics.RectF(fr.left, fr.top, fr.right, fr.bottom), sr, vis, fill, fillBlur, fillDim, a)
+    }
 
     fun statusText(): String {
         val r = resolved()
@@ -560,6 +600,20 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
     LaunchedEffect(model.placement, model.area, model.bmp) {
         model.freeFrame = null
         model.init()
+    }
+    // keep the fill preview in step with the edits (rendered off the main thread)
+    LaunchedEffect(model) {
+        snapshotFlow { model.fillSpec() }.collectLatest { spec ->
+            if (spec == null) {
+                model.fillPreview = null
+                return@collectLatest
+            }
+            delay(20)
+            val bmp = withContext(Dispatchers.Default) {
+                FillRenderer.preview(spec.src, spec.srcRect, spec.frame, spec.visible, spec.mode, spec.blur, spec.dim)
+            }
+            model.fillPreview = bmp.asImageBitmap()
+        }
     }
 
     fun store() {
@@ -1098,44 +1152,18 @@ private fun EditorCanvas(m: CropModel) {
     if (m.bmp == null) return
     val abmp = m.abmp ?: return
 
-    // 1) the fill, drawn across the whole editor and blurred on the GPU (Android 12+)
-    Canvas(
-        Modifier
-            .fillMaxSize()
-            .graphicsLayer {
-                val fr = m.frame()
-                val r = if (FillRenderer.usesBlur(m.fill)) {
-                    FillRenderer.blurRadius(m.fillBlur, min(fr.width, fr.height)) * 1.73f
-                } else {
-                    0f
-                }
-                renderEffect = if (r > 0.5f) BlurEffect(r, r, TileMode.Clamp) else null
-            },
-    ) {
-        drawRect(Color.Black)
-        if (m.fill == "black") return@Canvas
-        val fr = m.frame()
-        val p = m.picRect()
-        // the part of the picture inside the frame (what the wallpaper will contain)
-        val sx0 = ((max(fr.left, p.left) - p.left) / m.scale).coerceIn(0f, m.bw - 1f)
-        val sy0 = ((max(fr.top, p.top) - p.top) / m.scale).coerceIn(0f, m.bh - 1f)
-        val sx1 = ((min(fr.right, p.right) - p.left) / m.scale).coerceIn(sx0 + 1f, m.bw)
-        val sy1 = ((min(fr.bottom, p.bottom) - p.top) / m.scale).coerceIn(sy0 + 1f, m.bh)
-        val src = android.graphics.Rect(sx0.roundToInt(), sy0.roundToInt(), sx1.roundToInt(), sy1.roundToInt())
-        val visible = android.graphics.RectF(
-            p.left + src.left * m.scale, p.top + src.top * m.scale,
-            p.left + src.right * m.scale, p.top + src.bottom * m.scale,
-        )
-        val r = FillRenderer.blurRadius(m.fillBlur, min(fr.width, fr.height)) * 3f + 4f
-        val area = android.graphics.RectF(fr.left - r, fr.top - r, fr.right + r, fr.bottom + r)
-        drawIntoCanvas { c -> FillRenderer.drawFillBase(c.nativeCanvas, area, abmp, src, visible, m.fill) }
-    }
-
-    // 2) darkening, the picture (with blended edges), the frame and handles
+    // the fill (exact preview), the picture with blended edges, the frame and handles
     Canvas(Modifier.fillMaxSize()) {
         val fr = m.frame()
-        if (m.fill != "black" && m.fillDim > 0.01f) {
-            drawRect(Color.Black.copy(alpha = m.fillDim), fr.topLeft, fr.size)
+        drawRect(Color.Black, fr.topLeft, fr.size)
+        val fp = m.fillPreview
+        if (fp != null && m.fill != "black") {
+            drawImage(
+                image = fp,
+                dstOffset = IntOffset(fr.left.roundToInt(), fr.top.roundToInt()),
+                dstSize = IntSize(fr.width.roundToInt(), fr.height.roundToInt()),
+                filterQuality = FilterQuality.Low,
+            )
         }
         val p = m.picRect()
         drawIntoCanvas { c ->
