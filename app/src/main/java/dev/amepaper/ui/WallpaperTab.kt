@@ -74,6 +74,10 @@ import dev.amepaper.data.Placement
 import dev.amepaper.data.WallImage
 import dev.amepaper.data.get
 import dev.amepaper.wallpaper.RainWallpaperService
+import dev.amepaper.wallpaper.StaticWall
+
+/** Amepaper is running the wallpaper: live, or in static mode. */
+fun wallpaperInUse(ctx: Context): Boolean = isWallpaperActive(ctx) || StaticWall.enabled(Prefs.sp(ctx))
 
 fun isWallpaperActive(ctx: Context): Boolean =
     try {
@@ -115,7 +119,7 @@ fun applyWallpaper(ctx: Context, albumId: String, imageId: String, screens: List
         screens.first() == Screen.HOME -> "home screen"
         else -> "lock screen"
     }
-    if (isWallpaperActive(ctx)) {
+    if (wallpaperInUse(ctx)) {
         Toast.makeText(ctx, "Set on your $where", Toast.LENGTH_SHORT).show()
     } else {
         Toast.makeText(ctx, "Saved for your $where. Now apply Amepaper as your wallpaper.", Toast.LENGTH_LONG).show()
@@ -159,12 +163,14 @@ fun WallpaperTab(push: (Route) -> Unit) {
             .padding(horizontal = 16.dp),
     ) {
         Spacer(Modifier.height(16.dp))
-        ActivateBanner()
+        val staticMode = pref(K.STATIC_MODE)
+        if (!staticMode.value) ActivateBanner()
         CurrentWallpapersCard(lock = curLock, home = curHome) { img, screen ->
             val owner = albums.firstOrNull { a -> a.images.any { it.id == img.id } }
             if (owner != null) push(Route.CropRoute(owner.id, img.id, screen))
         }
-        EngineStatus()
+        if (!staticMode.value) EngineStatus()
+        StaticModeCard(staticMode)
 
         Spacer(Modifier.height(16.dp))
         MultiChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
@@ -220,7 +226,7 @@ fun WallpaperTab(push: (Route) -> Unit) {
         Button(
             onClick = {
                 Changer.changeNow(ctx)
-                if (!isWallpaperActive(ctx)) {
+                if (!wallpaperInUse(ctx)) {
                     Toast.makeText(ctx, "Set Amepaper as your wallpaper to see it", Toast.LENGTH_SHORT).show()
                 }
             },
@@ -293,6 +299,59 @@ fun lockScreenSource(ctx: Context): String? = try {
     }
 } catch (_: Exception) {
     null
+}
+
+/**
+ * Static mode for One UI's Color palette: Samsung only builds the palette from regular
+ * wallpapers, so this sets each picture as one (rain off while it's on).
+ */
+@Composable
+private fun StaticModeCard(on: PrefHandle<Boolean>) {
+    val ctx = LocalContext.current
+    var confirm by remember { mutableStateOf(false) }
+    GroupCard(Modifier.padding(top = 10.dp)) {
+        SwitchRow(
+            "Static mode · Color palette",
+            if (on.value) {
+                "On: your pictures are set as regular wallpapers, so Color palette follows them. Rain is off. " +
+                    "Changes happen when due, checked every 15 minutes and whenever you open the app."
+            } else {
+                "Sets your pictures as regular wallpapers so One UI's Color palette matches them. Turns off the rain."
+            },
+            on.value,
+        ) { want ->
+            if (want) {
+                confirm = true
+            } else {
+                on.value = false
+                StaticWall.stop(ctx)
+                Toast.makeText(ctx, "Pick Amepaper to bring the rain back", Toast.LENGTH_LONG).show()
+                openWallpaperPicker(ctx)
+            }
+        }
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("Turn on static mode?") },
+            text = {
+                Text(
+                    "Amepaper will set your current pictures as regular home and lock wallpapers (with your framing " +
+                        "and effects), and keep rotating them. The rain stops until you turn this off.\n\n" +
+                        "Then open Settings → Wallpaper and style → Color palette and pick one of the new palettes.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    on.value = true
+                    StaticWall.start(ctx)
+                    Toast.makeText(ctx, "Setting your wallpapers…", Toast.LENGTH_SHORT).show()
+                }) { Text("Turn on") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+        )
+    }
 }
 
 @Composable

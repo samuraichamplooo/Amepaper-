@@ -81,6 +81,9 @@ object K {
     val ROTATE_HOME = BoolKey("rotate_home", true)
     val ROTATE_LOCK = BoolKey("rotate_lock", true)
     val MIRROR = BoolKey("mirror_lock", false)
+    /** Static mode: set pictures as regular wallpapers (no rain) so One UI's Color palette follows them. */
+    val STATIC_MODE = BoolKey("static_mode", false)
+    val STATIC_SIG = StrKey("static_sig", "")
     val INDIVIDUAL = BoolKey("individual", false)
     val INTERVAL = IntKey("interval", 1440)
     val INTERVAL_HOME = IntKey("interval_home", 1440)

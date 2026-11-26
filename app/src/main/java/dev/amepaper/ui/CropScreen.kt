@@ -782,7 +782,7 @@ fun CropScreen(albumId: String, imageId: String, startScreen: Screen, pop: () ->
         store()
         val showing = Screen.entries.filter { Changer.current(sp, it)?.id == imageId }
         val msg = when {
-            !isWallpaperActive(ctx) -> "Saved with this picture. Tap Set wallpaper to use it."
+            !wallpaperInUse(ctx) -> "Saved with this picture. Tap Set wallpaper to use it."
             showing.size == 2 -> "Saved and updated on your home & lock screens"
             showing.size == 1 -> "Saved and updated on your ${if (showing[0] == Screen.HOME) "home" else "lock"} screen"
             else -> "Saved with this picture. It'll look like this every time it comes up in rotation."
