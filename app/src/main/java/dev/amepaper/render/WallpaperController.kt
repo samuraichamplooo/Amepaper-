@@ -215,7 +215,10 @@ class WallpaperController(
             }
             key in K.RAIN_KEYS -> pushParams()
             key in K.LIGHT_FX_KEYS -> pushFx()
-            key in K.IMAGE_KEYS -> refresh(fade = key == K.HOME_IMAGE.name || key == K.LOCK_IMAGE.name)
+            key in K.IMAGE_KEYS -> {
+                refresh(fade = key == K.HOME_IMAGE.name || key == K.LOCK_IMAGE.name)
+                if (!preview && sp.get(K.STATIC_MODE)) dev.amepaper.wallpaper.StaticWall.applySoon(app)
+            }
         }
     }
 

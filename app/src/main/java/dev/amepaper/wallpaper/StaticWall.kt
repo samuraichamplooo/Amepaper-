@@ -40,10 +40,12 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Static mode: instead of the live (rain) wallpaper, each picture is set as a regular wallpaper.
- * One UI builds its Color palette from regular wallpapers, so the system colors follow the
- * pictures. The interval changer keeps running in the background (every 15 minutes at most,
- * Android's limit for background work) and whenever the app is open.
+ * Static mode: pictures are set as regular wallpapers, which One UI builds its Color palette from.
+ *  - Lock screen only (default): the lock screen gets a regular picture, the home screen keeps
+ *    the live rain. One UI offers a palette made from the lock screen wallpaper.
+ *  - Both screens: no rain at all.
+ * The interval changer keeps running in the background (every 15 minutes at most, Android's
+ * limit for background work), while the rain is on screen, and whenever the app is open.
  */
 object StaticWall {
     private const val TAG = "AmeStatic"
@@ -62,7 +64,19 @@ object StaticWall {
     fun stop(ctx: Context) {
         WorkManager.getInstance(ctx).cancelUniqueWork(PERIODIC)
         WorkManager.getInstance(ctx).cancelUniqueWork(NOW)
-        Prefs.sp(ctx).edit().remove(K.STATIC_SIG.name).apply()
+        Prefs.sp(ctx).edit().remove(K.STATIC_SIG.name).remove(K.STATIC_LOCK_ID.name).apply()
+    }
+
+    /**
+     * Lock-only mode off: drop our lock picture so the lock screen shows the home wallpaper (the
+     * rain) again. Returns false if that didn't work and the wallpaper picker is needed.
+     */
+    fun clearLock(ctx: Context): Boolean = try {
+        val wm = WallpaperManager.getInstance(ctx)
+        wm.clear(WallpaperManager.FLAG_LOCK)
+        wm.getWallpaperId(WallpaperManager.FLAG_LOCK) < 0
+    } catch (t: Throwable) {
+        false
     }
 
     /** Re-check shortly (pictures, framing or effects changed). Only sets what actually changed. */
@@ -81,9 +95,10 @@ object StaticWall {
         val sp = Prefs.sp(app)
         if (!enabled(sp)) return false
         val wm = WallpaperManager.getInstance(app)
-        // if the live wallpaper was picked again after static mode set its pictures, the user went back to rain
+        val lockOnly = sp.get(K.STATIC_LOCK_ONLY)
+        // both-screens mode: if the live wallpaper was picked again afterwards, the user went back to rain
         val liveAgain = runCatching { wm.wallpaperInfo?.packageName == app.packageName }.getOrDefault(false)
-        if (liveAgain && sp.get(K.STATIC_SIG).isNotEmpty()) {
+        if (!lockOnly && liveAgain && sp.get(K.STATIC_SIG).isNotEmpty()) {
             sp.edit().putBoolean(K.STATIC_MODE.name, false).apply()
             stop(app)
             return false
@@ -91,10 +106,20 @@ object StaticWall {
         Changer.tick(app, System.currentTimeMillis())
 
         val (w, h) = displaySize(app)
-        val home = signature(sp, Screen.HOME, w, h)
+        val home = if (lockOnly) "-" else signature(sp, Screen.HOME, w, h)
         val lock = signature(sp, Screen.LOCK, w, h)
         val sig = "$home||$lock"
-        if (!force && sig == sp.get(K.STATIC_SIG)) return false
+        // something else replaced our lock picture (e.g. the live wallpaper was set for both screens)
+        val lockReplaced = lockOnly &&
+            runCatching { wm.getWallpaperId(WallpaperManager.FLAG_LOCK) }.getOrDefault(-1) != sp.get(K.STATIC_LOCK_ID)
+        if (!force && !lockReplaced && sig == sp.get(K.STATIC_SIG)) return false
+
+        if (lockOnly) {
+            val lockBmp = render(sp, Screen.LOCK, w, h)
+            val id = wm.setBitmap(lockBmp, null, true, WallpaperManager.FLAG_LOCK)
+            sp.edit().putString(K.STATIC_SIG.name, sig).putInt(K.STATIC_LOCK_ID.name, id).apply()
+            return true
+        }
 
         val homeBmp = render(sp, Screen.HOME, w, h)
         if (home == lock) {

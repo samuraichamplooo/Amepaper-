@@ -35,6 +35,7 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.RadioButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -164,12 +165,13 @@ fun WallpaperTab(push: (Route) -> Unit) {
     ) {
         Spacer(Modifier.height(16.dp))
         val staticMode = pref(K.STATIC_MODE)
-        if (!staticMode.value) ActivateBanner()
+        val staticAll = staticMode.value && !pref(K.STATIC_LOCK_ONLY).value
+        if (!staticAll) ActivateBanner()
         CurrentWallpapersCard(lock = curLock, home = curHome) { img, screen ->
             val owner = albums.firstOrNull { a -> a.images.any { it.id == img.id } }
             if (owner != null) push(Route.CropRoute(owner.id, img.id, screen))
         }
-        if (!staticMode.value) EngineStatus()
+        if (!staticAll) EngineStatus()
         StaticModeCard(staticMode)
 
         Spacer(Modifier.height(16.dp))
@@ -302,55 +304,102 @@ fun lockScreenSource(ctx: Context): String? = try {
 }
 
 /**
- * Static mode for One UI's Color palette: Samsung only builds the palette from regular
- * wallpapers, so this sets each picture as one (rain off while it's on).
+ * Static mode for One UI's Color palette: One UI only builds palettes from regular wallpapers,
+ * so this sets pictures as regular ones: the lock screen only (rain stays on home), or both.
  */
 @Composable
 private fun StaticModeCard(on: PrefHandle<Boolean>) {
     val ctx = LocalContext.current
+    val lockOnly = pref(K.STATIC_LOCK_ONLY)
     var confirm by remember { mutableStateOf(false) }
+    var choice by remember { mutableStateOf(true) }
     GroupCard(Modifier.padding(top = 10.dp)) {
         SwitchRow(
             "Static mode · Color palette",
-            if (on.value) {
-                "On: your pictures are set as regular wallpapers, so Color palette follows them. Rain is off. " +
-                    "Changes happen when due, checked every 15 minutes and whenever you open the app."
-            } else {
-                "Sets your pictures as regular wallpapers so One UI's Color palette matches them. Turns off the rain."
+            when {
+                !on.value -> "Sets a picture as a regular wallpaper so One UI's Color palette can match it."
+                lockOnly.value -> "On: rain on the home screen, a regular picture on the lock screen. In Color palette, " +
+                    "pick the palette made from your lock screen."
+                else -> "On: both screens show regular pictures, so Color palette follows them. Rain is off."
             },
             on.value,
         ) { want ->
             if (want) {
+                choice = lockOnly.value
                 confirm = true
             } else {
                 on.value = false
                 StaticWall.stop(ctx)
-                Toast.makeText(ctx, "Pick Amepaper to bring the rain back", Toast.LENGTH_LONG).show()
-                openWallpaperPicker(ctx)
+                if (lockOnly.value) {
+                    if (StaticWall.clearLock(ctx)) {
+                        Toast.makeText(ctx, "Rain is back on your lock screen", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(ctx, "Pick Amepaper for Home and lock screens to bring the rain back", Toast.LENGTH_LONG).show()
+                        openWallpaperPicker(ctx)
+                    }
+                } else {
+                    Toast.makeText(ctx, "Pick Amepaper to bring the rain back", Toast.LENGTH_LONG).show()
+                    openWallpaperPicker(ctx)
+                }
             }
         }
     }
     if (confirm) {
         AlertDialog(
             onDismissRequest = { confirm = false },
-            title = { Text("Turn on static mode?") },
+            title = { Text("Static mode") },
             text = {
-                Text(
-                    "Amepaper will set your current pictures as regular home and lock wallpapers (with your framing " +
-                        "and effects), and keep rotating them. The rain stops until you turn this off.\n\n" +
-                        "Then open Settings → Wallpaper and style → Color palette and pick one of the new palettes.",
-                )
+                Column {
+                    Text(
+                        "One UI only makes Color palettes from regular (still) wallpapers. Where should Amepaper put one?",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    ChoiceRow(choice, "Lock screen only", "Keeps the rain on your home screen. Pick the lock screen's palette.") {
+                        choice = true
+                    }
+                    ChoiceRow(!choice, "Home and lock screens", "Every palette follows your pictures, but no rain at all.") {
+                        choice = false
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Your framing and effects are kept and pictures keep rotating. Afterwards: Settings → Wallpaper and " +
+                            "style → Color palette.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirm = false
+                    lockOnly.value = choice
                     on.value = true
                     StaticWall.start(ctx)
-                    Toast.makeText(ctx, "Setting your wallpapers…", Toast.LENGTH_SHORT).show()
+                    if (choice && !isWallpaperActive(ctx)) {
+                        Toast.makeText(ctx, "Now set Amepaper on your home screen for the rain", Toast.LENGTH_LONG).show()
+                        openWallpaperPicker(ctx)
+                    } else {
+                        Toast.makeText(ctx, "Setting your wallpaper…", Toast.LENGTH_SHORT).show()
+                    }
                 }) { Text("Turn on") }
             },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
         )
+    }
+}
+
+@Composable
+private fun ChoiceRow(selected: Boolean, title: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(Modifier.padding(start = 4.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
     }
 }
 

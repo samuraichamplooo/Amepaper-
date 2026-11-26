@@ -84,6 +84,9 @@ object K {
     /** Static mode: set pictures as regular wallpapers (no rain) so One UI's Color palette follows them. */
     val STATIC_MODE = BoolKey("static_mode", false)
     val STATIC_SIG = StrKey("static_sig", "")
+    /** Static picture on the lock screen only; the rain stays on the home screen. */
+    val STATIC_LOCK_ONLY = BoolKey("static_lock_only", true)
+    val STATIC_LOCK_ID = IntKey("static_lock_id", -1)
     val INDIVIDUAL = BoolKey("individual", false)
     val INTERVAL = IntKey("interval", 1440)
     val INTERVAL_HOME = IntKey("interval_home", 1440)
