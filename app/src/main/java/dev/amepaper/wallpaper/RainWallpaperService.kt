@@ -1,6 +1,7 @@
 package dev.amepaper.wallpaper
 
 import android.app.KeyguardManager
+import android.app.WallpaperColors
 import android.app.WallpaperManager
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -20,6 +21,7 @@ import dev.amepaper.render.WallpaperGLView
 /**
  * The live wallpaper. One engine can be on both the home and lock screen; it then shows the
  * lock-screen image while the keyguard is up and cross-fades to the home image on unlock.
+ * It reports the home picture's colors to Android, so the system color palette can follow it.
  */
 class RainWallpaperService : WallpaperService() {
 
@@ -70,6 +72,15 @@ class RainWallpaperService : WallpaperService() {
                 preview = isPreview,
             )
             renderer.onSize = { w, h -> c.postSurfaceSize(w, h) }
+            // let Android (and One UI's Color palette) pick up the colors of the current picture
+            c.onColorsChanged = {
+                if (Build.VERSION.SDK_INT >= 27) {
+                    try {
+                        notifyColorsChanged()
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
             controller = c
             engines.add(this)
 
@@ -84,6 +95,9 @@ class RainWallpaperService : WallpaperService() {
             }
             updateScreen(fade = false)
         }
+
+        /** The palette of the picture on screen, so system colors can follow the wallpaper. */
+        override fun onComputeColors(): WallpaperColors? = controller?.themeColors
 
         override fun onSurfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
             super.onSurfaceChanged(holder, format, width, height)

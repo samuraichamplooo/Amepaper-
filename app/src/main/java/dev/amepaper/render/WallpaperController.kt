@@ -1,6 +1,9 @@
 package dev.amepaper.render
 
+import android.app.WallpaperColors
 import android.content.Context
+import android.graphics.Bitmap
+import android.os.Build
 import android.content.SharedPreferences
 import android.content.res.Configuration
 import android.os.Handler
@@ -58,6 +61,21 @@ class WallpaperController(
 
     /** Screens this engine may have to show (both, when one engine serves home and lock). */
     var screens: Set<Screen> = setOf(Screen.HOME)
+        set(value) {
+            field = value
+            updateThemeColors()
+        }
+
+    /** Colors of each screen's current picture, for the system's wallpaper color palette. */
+    private val colors = HashMap<Screen, WallpaperColors>()
+
+    /** What this wallpaper reports to Android: the home picture's colors (lock's if lock-only). */
+    @Volatile
+    var themeColors: WallpaperColors? = null
+        private set
+
+    /** Called (on the main thread) when [themeColors] changes, so the engine can tell Android. */
+    var onColorsChanged: (() -> Unit)? = null
 
     private val prepared = HashMap<Screen, Prepared>()
     private val loading = HashMap<Screen, String>()
@@ -314,8 +332,9 @@ class WallpaperController(
                     }
                 }
                 val err = error
+                val col = p?.let { colorsOf(it.sharp) }
                 main.post {
-                    onLoaded(s, key, p, ww, hh, fade)
+                    onLoaded(s, key, p, ww, hh, fade, col)
                     if (err != null) writeStatus(describe(s, err))
                 }
             }
@@ -324,13 +343,42 @@ class WallpaperController(
         }
     }
 
-    private fun onLoaded(s: Screen, key: String, p: Prepared?, ww: Int, hh: Int, fade: Boolean) {
+    private fun onLoaded(
+        s: Screen, key: String, p: Prepared?, ww: Int, hh: Int, fade: Boolean, col: WallpaperColors? = null,
+    ) {
         if (released) return
         if (loading[s] == key) loading.remove(s)
         if (p == null || ww != w || hh != h) return
         if (keyFor(s) != key) return // settings changed while decoding; a newer load is coming
         prepared[s] = p
+        if (col != null) {
+            colors[s] = col
+            updateThemeColors()
+        }
         if (s == screen) send(p, fade, 800f)
+    }
+
+    /** Palette of a prepared picture (as framed on screen), worked out on a small copy. */
+    private fun colorsOf(b: Bitmap): WallpaperColors? {
+        if (Build.VERSION.SDK_INT < 27) return null
+        return try {
+            val k = 160f / maxOf(b.width, b.height)
+            val small = if (k < 1f) {
+                Bitmap.createScaledBitmap(b, maxOf(1, (b.width * k).toInt()), maxOf(1, (b.height * k).toInt()), true)
+            } else {
+                b
+            }
+            WallpaperColors.fromBitmap(small)
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun updateThemeColors() {
+        val c = (if (Screen.HOME in screens) colors[Screen.HOME] else colors[Screen.LOCK]) ?: return
+        if (c == themeColors) return
+        themeColors = c
+        onColorsChanged?.invoke()
     }
 
     private fun describe(s: Screen, error: String?): String {
